@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luna - Voice Assistant with Face Tracking</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #0a0a1a;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .main-content {
+            flex: 1;
+            display: flex;
+            position: relative;
+        }
+
+        /* Prebuilt UI iframe takes most of the space */
+        #pipecat-iframe {
+            flex: 1;
+            border: none;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Camera overlay in corner */
+        .camera-overlay {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 240px;
+            height: 180px;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            background-color: #1a1a2e;
+        }
+
+        .camera-overlay video {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        .camera-overlay canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            transform: scaleX(-1);
+        }
+
+        .camera-label {
+            position: absolute;
+            bottom: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+
+        .tracking-indicator {
+            position: absolute;
+            top: 8px;
+            right: 8px;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #666;
+        }
+
+        .tracking-indicator.active {
+            background-color: #4CAF50;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .toggle-camera {
+            position: absolute;
+            top: 8px;
+            left: 8px;
+            background: rgba(0, 0, 0, 0.6);
+            border: none;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            cursor: pointer;
+        }
+
+        .toggle-camera:hover {
+            background: rgba(0, 0, 0, 0.8);
+        }
+    </style>
+    <!-- MediaPipe Face Detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/face_detection.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <div class="main-content">
+        <iframe id="pipecat-iframe" src="/client/"></iframe>
+    </div>
+
+    <!-- Camera overlay for face tracking -->
+    <div class="camera-overlay" id="camera-overlay">
+        <video id="camera-video" autoplay playsinline muted></video>
+        <canvas id="face-canvas"></canvas>
+        <div class="tracking-indicator" id="tracking-indicator"></div>
+        <button class="toggle-camera" onclick="toggleCamera()">Hide</button>
+        <div class="camera-label">Face Tracking</div>
+    </div>
+
+    <script>
+        let cameraStream = null;
+        let faceDetection = null;
+        let isTrackingFace = false;
+        let lastGazeUpdate = 0;
+        let iframeWindow = null;
+
+        const cameraVideo = document.getElementById('camera-video');
+        const faceCanvas = document.getElementById('face-canvas');
+        const trackingIndicator = document.getElementById('tracking-indicator');
+        const cameraOverlay = document.getElementById('camera-overlay');
+        const ctx = faceCanvas.getContext('2d');
+
+        // Connect to iframe when it loads
+        document.getElementById('pipecat-iframe').onload = function() {
+            iframeWindow = this.contentWindow;
+
+            // Inject gaze sending into iframe
+            // The iframe has access to dataChannel via window - we'll send via postMessage
+            console.log('Iframe loaded, setting up communication');
+        };
+
+        // Toggle camera visibility
+        function toggleCamera() {
+            const btn = cameraOverlay.querySelector('.toggle-camera');
+            if (cameraOverlay.style.display === 'none') {
+                cameraOverlay.style.display = 'block';
+                btn.textContent = 'Hide';
+            } else {
+                cameraOverlay.style.display = 'none';
+            }
+        }
+
+        // Initialize face detection
+        async function initFaceDetection() {
+            try {
+                cameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' },
+                    audio: false
+                });
+                cameraVideo.srcObject = cameraStream;
+
+                faceCanvas.width = 240;
+                faceCanvas.height = 180;
+
+                faceDetection = new FaceDetection({
+                    locateFile: (file) => {
+                        return `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection@0.4/${file}`;
+                    }
+                });
+
+                faceDetection.setOptions({
+                    model: 'short',
+                    minDetectionConfidence: 0.5
+                });
+
+                faceDetection.onResults(onFaceResults);
+
+                isTrackingFace = true;
+                trackingIndicator.classList.add('active');
+                detectFace();
+
+                console.log('Face detection initialized');
+            } catch (error) {
+                console.error('Failed to init face detection:', error);
+                cameraOverlay.style.display = 'none';
+            }
+        }
+
+        async function detectFace() {
+            if (!isTrackingFace || !faceDetection || cameraVideo.readyState < 2) {
+                requestAnimationFrame(detectFace);
+                return;
+            }
+
+            try {
+                await faceDetection.send({ image: cameraVideo });
+            } catch (e) {
+                // Ignore frame errors
+            }
+
+            requestAnimationFrame(detectFace);
+        }
+
+        function onFaceResults(results) {
+            ctx.clearRect(0, 0, faceCanvas.width, faceCanvas.height);
+
+            if (results.detections && results.detections.length > 0) {
+                let largestFace = results.detections[0];
+                let largestArea = 0;
+
+                for (const detection of results.detections) {
+                    const bbox = detection.boundingBox;
+                    const area = bbox.width * bbox.height;
+                    if (area > largestArea) {
+                        largestArea = area;
+                        largestFace = detection;
+                    }
+                }
+
+                const bbox = largestFace.boundingBox;
+
+                // Draw bounding box
+                const x = bbox.xCenter * faceCanvas.width - (bbox.width * faceCanvas.width) / 2;
+                const y = bbox.yCenter * faceCanvas.height - (bbox.height * faceCanvas.height) / 2;
+                const w = bbox.width * faceCanvas.width;
+                const h = bbox.height * faceCanvas.height;
+
+                ctx.strokeStyle = '#7c83fd';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(x, y, w, h);
+
+                // Draw center dot
+                ctx.fillStyle = '#7c83fd';
+                ctx.beginPath();
+                ctx.arc(bbox.xCenter * faceCanvas.width, bbox.yCenter * faceCanvas.height, 4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Calculate gaze (inverted X because camera is mirrored)
+                const gazeX = 1 - bbox.xCenter;
+                const gazeY = bbox.yCenter;
+
+                // Send gaze to backend via postMessage to iframe
+                const now = Date.now();
+                if (now - lastGazeUpdate > 100) {
+                    if (iframeWindow) {
+                        iframeWindow.postMessage({
+                            type: 'gaze',
+                            x: gazeX,
+                            y: gazeY
+                        }, '*');
+                    }
+                    lastGazeUpdate = now;
+                }
+            }
+        }
+
+        // Start face detection when page loads
+        window.addEventListener('load', initFaceDetection);
+
+        // Cleanup
+        window.addEventListener('beforeunload', () => {
+            isTrackingFace = false;
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>

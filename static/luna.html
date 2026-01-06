@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luna - Voice Assistant with Face Tracking</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #1a1a2e;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #7c83fd;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .main-container {
+            display: flex;
+            gap: 30px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            justify-content: center;
+            max-width: 1200px;
+        }
+
+        .video-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .video-container {
+            position: relative;
+            border-radius: 15px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        .video-container video {
+            display: block;
+            border-radius: 15px;
+        }
+
+        /* Luna face - smaller portrait */
+        #luna-video {
+            width: 240px;
+            height: 320px;
+            background-color: #1e1e28;
+            object-fit: contain;
+        }
+
+        /* Camera preview - square */
+        #camera-container {
+            position: relative;
+        }
+
+        #camera-video {
+            width: 320px;
+            height: 240px;
+            transform: scaleX(-1); /* Mirror the camera */
+            background-color: #2a2a4e;
+        }
+
+        #face-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 320px;
+            height: 240px;
+            pointer-events: none;
+            transform: scaleX(-1); /* Match camera mirror */
+        }
+
+        .section-label {
+            font-size: 14px;
+            color: #7c83fd;
+            text-align: center;
+        }
+
+        .controls-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+            min-width: 250px;
+        }
+
+        .status {
+            padding: 10px 20px;
+            background-color: #2a2a4e;
+            border-radius: 10px;
+            font-size: 14px;
+            min-width: 200px;
+            text-align: center;
+        }
+
+        .status.connected {
+            background-color: #1e5631;
+        }
+
+        .status.error {
+            background-color: #5e1e1e;
+        }
+
+        .connect-btn {
+            padding: 15px 40px;
+            font-size: 18px;
+            background-color: #7c83fd;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .connect-btn:hover {
+            background-color: #6a71e5;
+            transform: scale(1.05);
+        }
+
+        .connect-btn:disabled {
+            background-color: #4a4a6a;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .disconnect-btn {
+            background-color: #e74c3c;
+        }
+
+        .disconnect-btn:hover {
+            background-color: #c0392b;
+        }
+
+        .face-tracking-status {
+            padding: 8px 15px;
+            background-color: #2a2a4e;
+            border-radius: 8px;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .tracking-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background-color: #666;
+        }
+
+        .tracking-dot.active {
+            background-color: #4CAF50;
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .transcript {
+            width: 100%;
+            max-width: 800px;
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #2a2a4e;
+            border-radius: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .transcript h3 {
+            margin-bottom: 10px;
+            color: #7c83fd;
+        }
+
+        .transcript-content {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .transcript-line {
+            margin: 5px 0;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        .transcript-line.user {
+            background-color: #3a3a5e;
+            text-align: right;
+        }
+
+        .transcript-line.assistant {
+            background-color: #2e3a5e;
+        }
+
+        .gaze-debug {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #888;
+        }
+    </style>
+    <!-- MediaPipe Tasks Vision - New API -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <h1>Luna - Voice Assistant</h1>
+
+    <div class="main-container">
+        <!-- Luna's Face (from backend) -->
+        <div class="video-section">
+            <div class="video-container">
+                <video id="luna-video" autoplay playsinline></video>
+            </div>
+            <span class="section-label">Luna</span>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls-section">
+            <div class="status" id="status">Ready to connect</div>
+
+            <button class="connect-btn" id="connect-btn" onclick="toggleConnection()">
+                Start Conversation
+            </button>
+
+            <div class="face-tracking-status">
+                <div class="tracking-dot" id="tracking-dot"></div>
+                <span id="tracking-status">Face tracking: Loading...</span>
+            </div>
+
+            <div class="gaze-debug" id="gaze-debug">Gaze: -</div>
+        </div>
+
+        <!-- Camera with Face Detection -->
+        <div class="video-section">
+            <div class="video-container" id="camera-container">
+                <video id="camera-video" autoplay playsinline muted></video>
+                <canvas id="face-overlay"></canvas>
+            </div>
+            <span class="section-label">Your Camera (Face Tracking)</span>
+        </div>
+    </div>
+
+    <div class="transcript">
+        <h3>Conversation</h3>
+        <div class="transcript-content" id="transcript"></div>
+    </div>
+
+    <!-- Hidden audio element for bot voice -->
+    <audio id="bot-audio" autoplay></audio>
+
+    <script>
+        // State
+        let peerConnection = null;
+        let dataChannel = null;
+        let isConnected = false;
+        let cameraStream = null;
+        let faceDetector = null;
+        let isTrackingFace = false;
+        let lastGazeUpdate = 0;
+        let lastVideoTime = -1;
+
+        // DOM Elements
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connect-btn');
+        const transcriptEl = document.getElementById('transcript');
+        const lunaVideo = document.getElementById('luna-video');
+        const cameraVideo = document.getElementById('camera-video');
+        const faceOverlay = document.getElementById('face-overlay');
+        const trackingDot = document.getElementById('tracking-dot');
+        const trackingStatus = document.getElementById('tracking-status');
+        const gazeDebug = document.getElementById('gaze-debug');
+        const botAudio = document.getElementById('bot-audio');
+        const overlayCtx = faceOverlay.getContext('2d');
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + type;
+        }
+
+        function addTranscript(text, role) {
+            const line = document.createElement('div');
+            line.className = 'transcript-line ' + role;
+            line.textContent = (role === 'user' ? 'You: ' : 'Luna: ') + text;
+            transcriptEl.appendChild(line);
+            transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        }
+
+        // ============== MediaPipe Face Detection (New API) ==============
+        async function initFaceDetection() {
+            try {
+                trackingStatus.textContent = 'Face tracking: Initializing...';
+
+                // Start camera first
+                cameraStream = await navigator.mediaDevices.getUserMedia({
+                    video: { width: 640, height: 480, facingMode: 'user' },
+                    audio: false
+                });
+                cameraVideo.srcObject = cameraStream;
+
+                // Wait for video to be ready
+                await new Promise((resolve) => {
+                    cameraVideo.onloadedmetadata = () => {
+                        cameraVideo.play();
+                        resolve();
+                    };
+                });
+
+                // Set up canvas size
+                faceOverlay.width = 320;
+                faceOverlay.height = 240;
+
+                // Initialize MediaPipe Face Detector using the new Tasks Vision API
+                const vision = await FilesetResolver.forVisionTasks(
+                    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+                );
+
+                faceDetector = await FaceDetector.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    minDetectionConfidence: 0.5
+                });
+
+                // Start detection loop
+                isTrackingFace = true;
+                trackingDot.classList.add('active');
+                trackingStatus.textContent = 'Face tracking: Active';
+                detectFace();
+
+                console.log('Face detection initialized with new MediaPipe Tasks Vision API');
+            } catch (error) {
+                console.error('Failed to init face detection:', error);
+                trackingStatus.textContent = 'Face tracking: Error - ' + error.message;
+            }
+        }
+
+        function detectFace() {
+            if (!isTrackingFace || !faceDetector) {
+                requestAnimationFrame(detectFace);
+                return;
+            }
+
+            // Only process when we have a new video frame
+            if (cameraVideo.readyState >= 2 && cameraVideo.currentTime !== lastVideoTime) {
+                lastVideoTime = cameraVideo.currentTime;
+
+                try {
+                    const startTimeMs = performance.now();
+                    const detections = faceDetector.detectForVideo(cameraVideo, startTimeMs);
+                    processResults(detections);
+                } catch (e) {
+                    console.error('Detection error:', e);
+                }
+            }
+
+            requestAnimationFrame(detectFace);
+        }
+
+        function processResults(result) {
+            // Clear overlay
+            overlayCtx.clearRect(0, 0, faceOverlay.width, faceOverlay.height);
+
+            if (result.detections && result.detections.length > 0) {
+                // Find the largest face
+                let largestFace = result.detections[0];
+                let largestArea = 0;
+
+                for (const detection of result.detections) {
+                    const bbox = detection.boundingBox;
+                    const area = bbox.width * bbox.height;
+                    if (area > largestArea) {
+                        largestArea = area;
+                        largestFace = detection;
+                    }
+                }
+
+                const bbox = largestFace.boundingBox;
+
+                // Scale coordinates from video (640x480) to canvas (320x240)
+                const scaleX = faceOverlay.width / cameraVideo.videoWidth;
+                const scaleY = faceOverlay.height / cameraVideo.videoHeight;
+
+                const x = bbox.originX * scaleX;
+                const y = bbox.originY * scaleY;
+                const w = bbox.width * scaleX;
+                const h = bbox.height * scaleY;
+
+                // Draw bounding box
+                overlayCtx.strokeStyle = '#7c83fd';
+                overlayCtx.lineWidth = 3;
+                overlayCtx.strokeRect(x, y, w, h);
+
+                // Draw center dot
+                const centerX = x + w / 2;
+                const centerY = y + h / 2;
+                overlayCtx.fillStyle = '#7c83fd';
+                overlayCtx.beginPath();
+                overlayCtx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+                overlayCtx.fill();
+
+                // Calculate gaze direction (normalized 0-1)
+                // Since camera is mirrored, we invert X
+                const normalizedX = (bbox.originX + bbox.width / 2) / cameraVideo.videoWidth;
+                const normalizedY = (bbox.originY + bbox.height / 2) / cameraVideo.videoHeight;
+
+                const gazeX = 1 - normalizedX;  // Invert X because camera is mirrored
+                const gazeY = normalizedY;
+
+                // Update debug
+                gazeDebug.textContent = `Gaze: X=${gazeX.toFixed(2)}, Y=${gazeY.toFixed(2)}`;
+
+                // Send gaze to backend (throttle to 10 updates/sec)
+                const now = Date.now();
+                if (dataChannel && dataChannel.readyState === 'open' && now - lastGazeUpdate > 100) {
+                    dataChannel.send(JSON.stringify({
+                        type: 'gaze',
+                        x: gazeX,
+                        y: gazeY
+                    }));
+                    lastGazeUpdate = now;
+                }
+            } else {
+                gazeDebug.textContent = 'Gaze: No face detected';
+            }
+        }
+
+        // ============== WebRTC Connection ==============
+        async function toggleConnection() {
+            if (isConnected) {
+                disconnect();
+            } else {
+                await connect();
+            }
+        }
+
+        async function connect() {
+            try {
+                setStatus('Starting session...', '');
+                connectBtn.disabled = true;
+
+                // 1. Start session
+                const startResponse = await fetch('/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enableDefaultIceServers: true })
+                });
+                const startData = await startResponse.json();
+                const sessionId = startData.sessionId;
+
+                setStatus('Creating connection...', '');
+
+                // 2. Create RTCPeerConnection
+                const config = startData.iceConfig || { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+                peerConnection = new RTCPeerConnection(config);
+
+                // 3. Get user audio
+                const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                audioStream.getTracks().forEach(track => peerConnection.addTrack(track, audioStream));
+
+                // 4. Handle incoming tracks (audio + video from Luna)
+                peerConnection.ontrack = (event) => {
+                    console.log('Got track:', event.track.kind);
+                    if (event.track.kind === 'video') {
+                        lunaVideo.srcObject = event.streams[0];
+                    } else if (event.track.kind === 'audio') {
+                        botAudio.srcObject = event.streams[0];
+                    }
+                };
+
+                // 5. Create data channel for RTVI messages
+                dataChannel = peerConnection.createDataChannel('rtvi');
+                dataChannel.onopen = () => {
+                    console.log('Data channel open');
+                    dataChannel.send(JSON.stringify({ type: 'client-ready' }));
+                };
+                dataChannel.onmessage = (event) => {
+                    handleRTVIMessage(JSON.parse(event.data));
+                };
+
+                // 6. Create offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                // Wait for ICE gathering
+                await new Promise((resolve) => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        peerConnection.addEventListener('icegatheringstatechange', () => {
+                            if (peerConnection.iceGatheringState === 'complete') {
+                                resolve();
+                            }
+                        });
+                    }
+                });
+
+                setStatus('Connecting to Luna...', '');
+
+                // 7. Send offer to server
+                const offerResponse = await fetch(`/sessions/${sessionId}/api/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: peerConnection.localDescription.sdp,
+                        type: peerConnection.localDescription.type
+                    })
+                });
+                const answerData = await offerResponse.json();
+
+                // 8. Set remote description
+                await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answerData.sdp
+                }));
+
+                isConnected = true;
+                setStatus('Connected to Luna!', 'connected');
+                connectBtn.textContent = 'End Conversation';
+                connectBtn.classList.add('disconnect-btn');
+                connectBtn.disabled = false;
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                setStatus('Connection failed: ' + error.message, 'error');
+                connectBtn.disabled = false;
+                disconnect();
+            }
+        }
+
+        function disconnect() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+            isConnected = false;
+            setStatus('Disconnected', '');
+            connectBtn.textContent = 'Start Conversation';
+            connectBtn.classList.remove('disconnect-btn');
+            connectBtn.disabled = false;
+
+            // Clear Luna video
+            lunaVideo.srcObject = null;
+        }
+
+        function handleRTVIMessage(message) {
+            console.log('RTVI message:', message);
+
+            // Handle user transcription
+            if (message.type === 'user-transcription' && message.data) {
+                addTranscript(message.data.text, 'user');
+            }
+
+            // Handle bot output (assistant responses)
+            if (message.type === 'bot-tts-text' && message.data) {
+                addTranscript(message.data.text, 'assistant');
+            }
+
+            // Handle bot ready
+            if (message.type === 'bot-ready') {
+                console.log('Bot is ready');
+            }
+        }
+
+        // ============== Initialization ==============
+        window.addEventListener('load', async () => {
+            // Start face detection immediately (for preview)
+            await initFaceDetection();
+        });
+
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            isTrackingFace = false;
+            disconnect();
+            if (cameraStream) {
+                cameraStream.getTracks().forEach(track => track.stop());
+            }
+        });
+    </script>
+</body>
+</html>

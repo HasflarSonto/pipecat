@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from loguru import logger
 from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
 
@@ -48,6 +49,8 @@ from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequestHandler,
 )
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+from luna_face_renderer import LunaFaceRenderer
 
 load_dotenv(override=True)
 
@@ -198,6 +201,37 @@ async def get_current_time(params: FunctionCallParams):
         await params.result_callback(f"I couldn't get the time for that timezone. Try a timezone like 'America/New_York' or 'Europe/London'.")
 
 
+# Global references for emotion updates
+current_task = None
+face_renderer = None
+
+VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
+
+async def set_emotion(params: FunctionCallParams):
+    """Set Luna's facial emotion."""
+    global current_task, face_renderer
+    emotion = params.arguments.get("emotion", "neutral").lower()
+    logger.info(f"Setting emotion to: {emotion}")
+
+    if emotion not in VALID_EMOTIONS:
+        await params.result_callback(f"Unknown emotion. Valid emotions are: {', '.join(VALID_EMOTIONS)}")
+        return
+
+    # Update the face renderer
+    if face_renderer:
+        face_renderer.set_emotion(emotion)
+
+    # Also send emotion update to frontend via RTVI (for any client-side UI)
+    if current_task:
+        emotion_frame = RTVIServerMessageFrame(data={
+            "type": "emotion",
+            "emotion": emotion
+        })
+        await current_task.queue_frames([emotion_frame])
+
+    await params.result_callback(f"Emotion set to {emotion}")
+
+
 # ============== TOOL DEFINITIONS ==============
 
 weather_tool = FunctionSchema(
@@ -236,14 +270,31 @@ time_tool = FunctionSchema(
     required=["timezone"],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool])
+emotion_tool = FunctionSchema(
+    name="set_emotion",
+    description="Set your facial expression/emotion. Use this to express how you're feeling during the conversation. Call this naturally as you speak - be happy when greeting, thinking when processing, surprised at interesting facts, cat when being playful or cute, etc.",
+    properties={
+        "emotion": {
+            "type": "string",
+            "description": "The emotion to display. Options: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat (playful with whiskers)",
+            "enum": VALID_EMOTIONS,
+        },
+    },
+    required=["emotion"],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool])
 
 
 # ============== BOT LOGIC ==============
 
 async def run_bot(webrtc_connection: SmallWebRTCConnection):
     """Main bot logic - runs when a client connects."""
+    global face_renderer
     logger.info("Starting bot")
+
+    # Create the face renderer (240x320 portrait)
+    face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
 
     # Create transport using the WebRTC connection
     transport = SmallWebRTCTransport(
@@ -251,6 +302,9 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
         params=TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
+            video_out_enabled=True,
+            video_out_width=240,
+            video_out_height=320,
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
         ),
     )
@@ -277,12 +331,13 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("get_weather", get_weather)
     llm.register_function("web_search", web_search)
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("set_emotion", set_emotion)
 
     # System prompt
     messages = [
         {
             "role": "system",
-            "content": """Your name is Luna. You are a friendly, helpful voice assistant.
+            "content": """Your name is Luna. You are a friendly, helpful voice assistant with an animated face.
 
 EXTREMELY IMPORTANT - READ CAREFULLY:
 Your training data is from 2024 and is OUTDATED. The current date is January 2026. Many things have changed since your training.
@@ -295,6 +350,16 @@ When you use web_search, the results are LIVE from the internet RIGHT NOW. You M
 
 Example: If you think X is mayor but search says Y is mayor, Y is correct because search is LIVE and your data is 2 years old.
 
+EMOTIONS - You have an animated face! Use set_emotion frequently to express yourself:
+- Use "happy" when greeting, giving good news, or being friendly
+- Use "thinking" when processing a request or searching
+- Use "excited" when sharing exciting news or discoveries
+- Use "surprised" when hearing unexpected information
+- Use "confused" if you don't understand something
+- Use "sad" when delivering bad news
+- Use "neutral" for calm, factual responses
+- Call set_emotion BEFORE speaking to set your expression
+
 OTHER RULES:
 - Keep responses to 1-2 sentences max (this is voice)
 - Be conversational and natural
@@ -305,6 +370,7 @@ Tools:
 - get_weather: Current weather for any city
 - web_search: LIVE internet search (trust these results completely)
 - get_current_time: Current time in any timezone
+- set_emotion: Change your facial expression (happy, sad, angry, surprised, thinking, confused, excited, neutral)
 
 Be warm but brief. Your name is Luna.""",
         },
@@ -317,7 +383,7 @@ Be warm but brief. Your name is Luna.""",
     # RTVI processor for UI communication (enables text display in prebuilt UI)
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    # Build the pipeline with RTVI processor
+    # Build the pipeline with RTVI processor and face renderer
     pipeline = Pipeline(
         [
             transport.input(),
@@ -326,6 +392,7 @@ Be warm but brief. Your name is Luna.""",
             context_aggregator.user(),
             llm,
             tts,
+            face_renderer,  # Renders animated face as video output
             transport.output(),
             context_aggregator.assistant(),
         ]
@@ -340,6 +407,10 @@ Be warm but brief. Your name is Luna.""",
         ),
         observers=[RTVIObserver(rtvi)],
     )
+
+    # Set global task reference for emotion updates
+    global current_task
+    current_task = task
 
     @rtvi.event_handler("on_client_ready")
     async def on_client_ready(rtvi):
@@ -357,8 +428,23 @@ Be warm but brief. Your name is Luna.""",
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         logger.info("Client connected")
+        # Set happy emotion when connecting
+        face_renderer.set_emotion("happy")
         messages.append({"role": "user", "content": "Hello!"})
         await task.queue_frames([LLMRunFrame()])
+
+    @transport.event_handler("on_app_message")
+    async def on_app_message(transport, message, sender):
+        """Handle incoming app messages (like gaze data)."""
+        try:
+            data = message if isinstance(message, dict) else {}
+            if data.get("type") == "gaze":
+                # Update face renderer gaze
+                x = data.get("x", 0.5)
+                y = data.get("y", 0.5)
+                face_renderer.set_gaze(x, y)
+        except Exception as e:
+            pass  # Ignore errors
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
@@ -403,9 +489,20 @@ def create_app():
     # Mount the built-in frontend
     app.mount("/client", SmallWebRTCPrebuiltUI)
 
+    # Mount static files for Luna face
+    static_dir = os.path.join(os.path.dirname(__file__), "static")
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
     @app.get("/", include_in_schema=False)
     async def root_redirect():
-        return RedirectResponse(url="/client/")
+        return RedirectResponse(url="/luna")
+
+    @app.get("/luna", include_in_schema=False)
+    async def luna_page():
+        """Serve the Luna custom frontend with face tracking."""
+        from fastapi.responses import FileResponse
+        static_dir = os.path.join(os.path.dirname(__file__), "static")
+        return FileResponse(os.path.join(static_dir, "luna.html"))
 
     @app.post("/start")
     async def rtvi_start(request: Request):

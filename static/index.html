@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Luna - Voice Assistant</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background-color: #1a1a2e;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            color: #ffffff;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        h1 {
+            color: #7c83fd;
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+
+        .container {
+            display: flex;
+            gap: 30px;
+            align-items: flex-start;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .face-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        #face-container {
+            position: relative;
+            width: 240px;
+            height: 320px;
+            border-radius: 20px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+        }
+
+        #face-canvas {
+            display: block;
+            width: 240px;
+            height: 320px;
+            border-radius: 20px;
+        }
+
+        #camera-feed {
+            position: absolute;
+            top: -9999px;
+            left: -9999px;
+            width: 1px;
+            height: 1px;
+        }
+
+        .emotion-label {
+            margin-top: 10px;
+            padding: 5px 15px;
+            background-color: #2a2a4e;
+            border-radius: 20px;
+            font-size: 14px;
+        }
+
+        .controls-section {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 20px;
+        }
+
+        .status {
+            padding: 10px 20px;
+            background-color: #2a2a4e;
+            border-radius: 10px;
+            font-size: 14px;
+            min-width: 200px;
+            text-align: center;
+        }
+
+        .status.connected {
+            background-color: #1e5631;
+        }
+
+        .status.error {
+            background-color: #5e1e1e;
+        }
+
+        .connect-btn {
+            padding: 15px 40px;
+            font-size: 18px;
+            background-color: #7c83fd;
+            color: white;
+            border: none;
+            border-radius: 30px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .connect-btn:hover {
+            background-color: #6a71e5;
+            transform: scale(1.05);
+        }
+
+        .connect-btn:disabled {
+            background-color: #4a4a6a;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .disconnect-btn {
+            background-color: #e74c3c;
+        }
+
+        .disconnect-btn:hover {
+            background-color: #c0392b;
+        }
+
+        .transcript {
+            width: 100%;
+            max-width: 600px;
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #2a2a4e;
+            border-radius: 15px;
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .transcript h3 {
+            margin-bottom: 10px;
+            color: #7c83fd;
+        }
+
+        .transcript-content {
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .transcript-line {
+            margin: 5px 0;
+            padding: 5px 10px;
+            border-radius: 5px;
+        }
+
+        .transcript-line.user {
+            background-color: #3a3a5e;
+            text-align: right;
+        }
+
+        .transcript-line.assistant {
+            background-color: #2e3a5e;
+        }
+
+        .emotion-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+            max-width: 300px;
+        }
+
+        .emotion-btn {
+            padding: 8px 15px;
+            font-size: 12px;
+            background-color: #3a3a5e;
+            color: white;
+            border: none;
+            border-radius: 15px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .emotion-btn:hover {
+            background-color: #5a5a8e;
+        }
+
+        .audio-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 20px;
+            background-color: #2a2a4e;
+            border-radius: 10px;
+        }
+
+        .audio-bars {
+            display: flex;
+            gap: 3px;
+            height: 20px;
+            align-items: center;
+        }
+
+        .audio-bar {
+            width: 4px;
+            height: 5px;
+            background-color: #7c83fd;
+            border-radius: 2px;
+            transition: height 0.1s ease;
+        }
+
+        .audio-bars.speaking .audio-bar:nth-child(1) { animation: audioBar 0.5s ease infinite; animation-delay: 0s; }
+        .audio-bars.speaking .audio-bar:nth-child(2) { animation: audioBar 0.5s ease infinite; animation-delay: 0.1s; }
+        .audio-bars.speaking .audio-bar:nth-child(3) { animation: audioBar 0.5s ease infinite; animation-delay: 0.2s; }
+        .audio-bars.speaking .audio-bar:nth-child(4) { animation: audioBar 0.5s ease infinite; animation-delay: 0.3s; }
+        .audio-bars.speaking .audio-bar:nth-child(5) { animation: audioBar 0.5s ease infinite; animation-delay: 0.4s; }
+
+        @keyframes audioBar {
+            0%, 100% { height: 5px; }
+            50% { height: 20px; }
+        }
+
+        .debug-info {
+            margin-top: 20px;
+            font-size: 12px;
+            color: #666;
+        }
+    </style>
+    <!-- MediaPipe Face Detection -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+</head>
+<body>
+    <h1>Luna Voice Assistant</h1>
+
+    <div class="container">
+        <div class="face-section">
+            <div id="face-container">
+                <canvas id="face-canvas" width="240" height="320"></canvas>
+            </div>
+            <div class="emotion-label" id="emotion-label">neutral</div>
+        </div>
+
+        <div class="controls-section">
+            <div class="status" id="status">Ready to connect</div>
+
+            <div class="audio-indicator">
+                <span>Audio</span>
+                <div class="audio-bars" id="audio-bars">
+                    <div class="audio-bar"></div>
+                    <div class="audio-bar"></div>
+                    <div class="audio-bar"></div>
+                    <div class="audio-bar"></div>
+                    <div class="audio-bar"></div>
+                </div>
+            </div>
+
+            <button class="connect-btn" id="connect-btn" onclick="toggleConnection()">
+                Start Conversation
+            </button>
+
+            <div class="emotion-buttons">
+                <button class="emotion-btn" onclick="testEmotion('happy')">Happy</button>
+                <button class="emotion-btn" onclick="testEmotion('sad')">Sad</button>
+                <button class="emotion-btn" onclick="testEmotion('angry')">Angry</button>
+                <button class="emotion-btn" onclick="testEmotion('surprised')">Surprised</button>
+                <button class="emotion-btn" onclick="testEmotion('thinking')">Thinking</button>
+                <button class="emotion-btn" onclick="testEmotion('confused')">Confused</button>
+                <button class="emotion-btn" onclick="testEmotion('excited')">Excited</button>
+                <button class="emotion-btn" onclick="testEmotion('neutral')">Neutral</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="transcript">
+        <h3>Conversation</h3>
+        <div class="transcript-content" id="transcript"></div>
+    </div>
+
+    <!-- Hidden video for camera feed -->
+    <video id="camera-feed" playsinline></video>
+
+    <script src="luna_face.js"></script>
+    <script>
+        // WebRTC and RTVI Connection
+        let peerConnection = null;
+        let dataChannel = null;
+        let isConnected = false;
+        let audioContext = null;
+        let analyser = null;
+
+        const statusEl = document.getElementById('status');
+        const connectBtn = document.getElementById('connect-btn');
+        const transcriptEl = document.getElementById('transcript');
+        const emotionLabel = document.getElementById('emotion-label');
+        const audioBars = document.getElementById('audio-bars');
+
+        function setStatus(text, type = '') {
+            statusEl.textContent = text;
+            statusEl.className = 'status ' + type;
+        }
+
+        function addTranscript(text, role) {
+            const line = document.createElement('div');
+            line.className = 'transcript-line ' + role;
+            line.textContent = (role === 'user' ? 'You: ' : 'Luna: ') + text;
+            transcriptEl.appendChild(line);
+            transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        }
+
+        function testEmotion(emotion) {
+            if (window.lunaFace) {
+                window.lunaFace.setEmotion(emotion);
+                emotionLabel.textContent = emotion;
+            }
+        }
+
+        async function toggleConnection() {
+            if (isConnected) {
+                disconnect();
+            } else {
+                await connect();
+            }
+        }
+
+        async function connect() {
+            try {
+                setStatus('Starting session...', '');
+                connectBtn.disabled = true;
+
+                // 1. Start session
+                const startResponse = await fetch('/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ enableDefaultIceServers: true })
+                });
+                const startData = await startResponse.json();
+                const sessionId = startData.sessionId;
+
+                setStatus('Creating connection...', '');
+
+                // 2. Create RTCPeerConnection
+                const config = startData.iceConfig || { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+                peerConnection = new RTCPeerConnection(config);
+
+                // 3. Get user media
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                stream.getTracks().forEach(track => peerConnection.addTrack(track, stream));
+
+                // 4. Handle incoming audio
+                peerConnection.ontrack = (event) => {
+                    const audio = new Audio();
+                    audio.srcObject = event.streams[0];
+                    audio.play();
+
+                    // Set up audio analysis for visualization
+                    setupAudioAnalysis(event.streams[0]);
+                };
+
+                // 5. Create data channel for RTVI messages
+                dataChannel = peerConnection.createDataChannel('rtvi');
+                dataChannel.onopen = () => {
+                    console.log('Data channel open');
+                    // Send client ready
+                    dataChannel.send(JSON.stringify({
+                        type: 'client-ready'
+                    }));
+                };
+                dataChannel.onmessage = (event) => {
+                    handleRTVIMessage(JSON.parse(event.data));
+                };
+
+                // 6. Create offer
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+
+                // Wait for ICE gathering
+                await new Promise((resolve) => {
+                    if (peerConnection.iceGatheringState === 'complete') {
+                        resolve();
+                    } else {
+                        peerConnection.addEventListener('icegatheringstatechange', () => {
+                            if (peerConnection.iceGatheringState === 'complete') {
+                                resolve();
+                            }
+                        });
+                    }
+                });
+
+                setStatus('Connecting to Luna...', '');
+
+                // 7. Send offer to server
+                const offerResponse = await fetch(`/sessions/${sessionId}/api/offer`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        sdp: peerConnection.localDescription.sdp,
+                        type: peerConnection.localDescription.type
+                    })
+                });
+                const answerData = await offerResponse.json();
+
+                // 8. Set remote description
+                await peerConnection.setRemoteDescription(new RTCSessionDescription({
+                    type: 'answer',
+                    sdp: answerData.sdp
+                }));
+
+                isConnected = true;
+                setStatus('Connected to Luna!', 'connected');
+                connectBtn.textContent = 'End Conversation';
+                connectBtn.classList.add('disconnect-btn');
+                connectBtn.disabled = false;
+
+                // Set happy emotion on connect
+                if (window.lunaFace) {
+                    window.lunaFace.setEmotion('happy');
+                    emotionLabel.textContent = 'happy';
+                }
+
+            } catch (error) {
+                console.error('Connection error:', error);
+                setStatus('Connection failed: ' + error.message, 'error');
+                connectBtn.disabled = false;
+                disconnect();
+            }
+        }
+
+        function disconnect() {
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            if (dataChannel) {
+                dataChannel.close();
+                dataChannel = null;
+            }
+            isConnected = false;
+            setStatus('Disconnected', '');
+            connectBtn.textContent = 'Start Conversation';
+            connectBtn.classList.remove('disconnect-btn');
+            connectBtn.disabled = false;
+            audioBars.classList.remove('speaking');
+
+            if (window.lunaFace) {
+                window.lunaFace.setEmotion('neutral');
+                emotionLabel.textContent = 'neutral';
+            }
+        }
+
+        function handleRTVIMessage(message) {
+            console.log('RTVI message:', message);
+
+            // RTVI messages have format: { label: "rtvi-ai", type: "...", data: {...} }
+            // Handle server-message type which contains our custom emotion data
+            if (message.type === 'server-message' && message.data) {
+                const data = message.data;
+                // Handle emotion updates
+                if (data.type === 'emotion' && data.emotion) {
+                    if (window.lunaFace) {
+                        window.lunaFace.setEmotion(data.emotion);
+                        emotionLabel.textContent = data.emotion;
+                    }
+                }
+            }
+
+            // Handle user transcription
+            if (message.type === 'user-transcription' && message.data) {
+                addTranscript(message.data.text, 'user');
+            }
+
+            // Handle bot output (assistant responses)
+            if (message.type === 'bot-tts-text' && message.data) {
+                addTranscript(message.data.text, 'assistant');
+            }
+
+            // Handle bot ready
+            if (message.type === 'bot-ready') {
+                console.log('Bot is ready');
+            }
+        }
+
+        function setupAudioAnalysis(stream) {
+            try {
+                audioContext = new AudioContext();
+                analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 32;
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+                function updateBars() {
+                    if (!analyser) return;
+                    analyser.getByteFrequencyData(dataArray);
+                    const average = dataArray.reduce((a, b) => a + b) / dataArray.length;
+
+                    if (average > 10) {
+                        audioBars.classList.add('speaking');
+                    } else {
+                        audioBars.classList.remove('speaking');
+                    }
+                    requestAnimationFrame(updateBars);
+                }
+                updateBars();
+            } catch (e) {
+                console.log('Audio analysis not available:', e);
+            }
+        }
+
+        // Keyboard shortcuts for testing emotions
+        document.addEventListener('keydown', (e) => {
+            const emotionMap = {
+                '1': 'neutral',
+                '2': 'happy',
+                '3': 'sad',
+                '4': 'angry',
+                '5': 'surprised',
+                '6': 'thinking',
+                '7': 'confused',
+                '8': 'excited'
+            };
+
+            if (emotionMap[e.key]) {
+                testEmotion(emotionMap[e.key]);
+            }
+        });
+
+        // Handle page unload
+        window.addEventListener('beforeunload', () => {
+            disconnect();
+        });
+    </script>
+</body>
+</html>
