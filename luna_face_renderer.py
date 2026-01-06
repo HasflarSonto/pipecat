@@ -176,6 +176,10 @@ class LunaFaceRenderer(FrameProcessor):
         self.target_gaze_x = 0.5
         self.target_gaze_y = 0.5
 
+        # Face offset for edge tracking (shifts entire face when looking at edges)
+        self.face_offset_x = 0.0
+        self.face_offset_y = 0.0
+
         # Current parameters (interpolated)
         self._current_params = dict(self.EMOTIONS["neutral"])
 
@@ -214,9 +218,41 @@ class LunaFaceRenderer(FrameProcessor):
             self._current_params[key] = target.get(key, False)
 
         # Update gaze (smooth follow)
-        gaze_speed = 8.0  # How fast eyes follow
+        gaze_speed = 10.0  # How fast eyes follow (increased for snappier response)
         self.gaze_x = self._lerp(self.gaze_x, self.target_gaze_x, delta_time * gaze_speed)
         self.gaze_y = self._lerp(self.gaze_y, self.target_gaze_y, delta_time * gaze_speed)
+
+        # Calculate face offset for edge tracking
+        # When gaze is at extreme edges, shift the entire face
+        target_offset_x = 0.0
+        target_offset_y = 0.0
+        edge_threshold = 0.25  # Start shifting when within 25% of edge
+        max_face_shift = 25  # Maximum pixels to shift face
+
+        # Horizontal face shift
+        if self.gaze_x < edge_threshold:
+            # Looking far left - shift face left
+            edge_factor = (edge_threshold - self.gaze_x) / edge_threshold
+            target_offset_x = -max_face_shift * edge_factor
+        elif self.gaze_x > (1 - edge_threshold):
+            # Looking far right - shift face right
+            edge_factor = (self.gaze_x - (1 - edge_threshold)) / edge_threshold
+            target_offset_x = max_face_shift * edge_factor
+
+        # Vertical face shift
+        if self.gaze_y < edge_threshold:
+            # Looking far up - shift face up
+            edge_factor = (edge_threshold - self.gaze_y) / edge_threshold
+            target_offset_y = -max_face_shift * 0.6 * edge_factor  # Less vertical shift
+        elif self.gaze_y > (1 - edge_threshold):
+            # Looking far down - shift face down
+            edge_factor = (self.gaze_y - (1 - edge_threshold)) / edge_threshold
+            target_offset_y = max_face_shift * 0.6 * edge_factor
+
+        # Smooth the face offset
+        face_shift_speed = 6.0
+        self.face_offset_x = self._lerp(self.face_offset_x, target_offset_x, delta_time * face_shift_speed)
+        self.face_offset_y = self._lerp(self.face_offset_y, target_offset_y, delta_time * face_shift_speed)
 
         # Update blink
         current_time = time.time()
@@ -268,8 +304,8 @@ class LunaFaceRenderer(FrameProcessor):
         # Gaze offset - move eyes based on where we're looking
         # gaze_x: 0=look left, 0.5=center, 1=look right
         # gaze_y: 0=look up, 0.5=center, 1=look down
-        gaze_range_x = 15  # Max pixels to shift horizontally
-        gaze_range_y = 10  # Max pixels to shift vertically
+        gaze_range_x = 35  # Max pixels to shift horizontally (increased for dramatic movement)
+        gaze_range_y = 25  # Max pixels to shift vertically (increased for dramatic movement)
         gaze_x_offset = int((self.gaze_x - 0.5) * 2 * gaze_range_x)
         gaze_y_offset = int((self.gaze_y - 0.5) * 2 * gaze_range_y)
 
@@ -332,15 +368,15 @@ class LunaFaceRenderer(FrameProcessor):
         ]
         draw.ellipse(eye_bbox, fill=self.face_color)
 
-    def _draw_robot_mouth(self, draw: ImageDraw.Draw):
+    def _draw_robot_mouth(self, draw: ImageDraw.Draw, offset_x: int = 0, offset_y: int = 0):
         """Draw the robot mouth - simple curved line or O shape."""
         params = self._current_params
         mouth_curve = params["mouth_curve"]
         mouth_open = params["mouth_open"]
         mouth_width = int(params["mouth_width"])
 
-        x = self.center_x
-        y = self.mouth_y
+        x = self.center_x + offset_x
+        y = self.mouth_y + offset_y
 
         if mouth_open > 0.3:
             # Draw O-shaped mouth for surprised
@@ -388,11 +424,11 @@ class LunaFaceRenderer(FrameProcessor):
                     # Frown - arc on top half
                     draw.arc(arc_bbox, start=180, end=360, fill=self.face_color, width=4)
 
-    def _draw_cat_mouth(self, draw: ImageDraw.Draw):
+    def _draw_cat_mouth(self, draw: ImageDraw.Draw, offset_x: int = 0, offset_y: int = 0):
         """Draw cat mouth - horizontal 3 shape (like ω) with whiskers."""
-        x = self.center_x
+        x = self.center_x + offset_x
         # Move mouth closer to eyes
-        y = self.eye_y + 50
+        y = self.eye_y + 50 + offset_y
 
         # Draw horizontal "3" - like ω shape
         # Two bumps going downward, meeting in the middle
@@ -414,7 +450,7 @@ class LunaFaceRenderer(FrameProcessor):
         # Whiskers - 3 on each side, positioned lower near the mouth
         whisker_length = 40
         whisker_start_x = 55  # Start from outside the eyes
-        whisker_y = self.eye_y + 45  # Closer to mouth level
+        whisker_y = self.eye_y + 45 + offset_y  # Closer to mouth level
 
         for i, angle in enumerate([-15, 0, 15]):
             angle_rad = math.radians(angle)
@@ -466,21 +502,23 @@ class LunaFaceRenderer(FrameProcessor):
             (self.right_eye_x + 10, ear_y + inner_size + 5),
         ], fill=self.blush_color)
 
-    def _draw_angry_brows(self, draw: ImageDraw.Draw):
+    def _draw_angry_brows(self, draw: ImageDraw.Draw, offset_x: int = 0, offset_y: int = 0):
         """Draw angry eyebrows (V shape)."""
-        brow_y = self.eye_y - 35
+        brow_y = self.eye_y - 35 + offset_y
         brow_length = 30
+        left_eye_x = self.left_eye_x + offset_x
+        right_eye_x = self.right_eye_x + offset_x
 
         # Left brow - angled down toward center
         draw.line([
-            (self.left_eye_x - brow_length, brow_y - 10),
-            (self.left_eye_x + 10, brow_y + 5),
+            (left_eye_x - brow_length, brow_y - 10),
+            (left_eye_x + 10, brow_y + 5),
         ], fill=self.face_color, width=5)
 
         # Right brow - angled down toward center
         draw.line([
-            (self.right_eye_x - 10, brow_y + 5),
-            (self.right_eye_x + brow_length, brow_y - 10),
+            (right_eye_x - 10, brow_y + 5),
+            (right_eye_x + brow_length, brow_y - 10),
         ], fill=self.face_color, width=5)
 
     def _draw_sparkles(self, draw: ImageDraw.Draw):
@@ -522,19 +560,28 @@ class LunaFaceRenderer(FrameProcessor):
 
         params = self._current_params
 
+        # Apply face offset for edge tracking
+        offset_x = int(self.face_offset_x)
+        offset_y = int(self.face_offset_y)
+
+        # Calculate offset positions for all face elements
+        left_eye_x = self.left_eye_x + offset_x
+        right_eye_x = self.right_eye_x + offset_x
+        eye_y = self.eye_y + offset_y
+
         # Always use robot eyes (rounded rectangles)
-        self._draw_robot_eye(draw, self.left_eye_x, self.eye_y, is_right=False)
-        self._draw_robot_eye(draw, self.right_eye_x, self.eye_y, is_right=True)
+        self._draw_robot_eye(draw, left_eye_x, eye_y, is_right=False)
+        self._draw_robot_eye(draw, right_eye_x, eye_y, is_right=True)
 
         # Draw angry brows if needed
         if params.get("angry_brows"):
-            self._draw_angry_brows(draw)
+            self._draw_angry_brows(draw, offset_x, offset_y)
 
         # Draw mouth - cat_face emotion uses sideways 3 + whiskers, others use simple curve
         if params.get("cat_face"):
-            self._draw_cat_mouth(draw)
+            self._draw_cat_mouth(draw, offset_x, offset_y)
         else:
-            self._draw_robot_mouth(draw)
+            self._draw_robot_mouth(draw, offset_x, offset_y)
 
         # Draw sparkles if excited
         if params.get("sparkle") and self.emotion_transition > 0.5:

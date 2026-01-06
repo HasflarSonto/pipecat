@@ -216,8 +216,6 @@
             color: #888;
         }
     </style>
-    <!-- MediaPipe Tasks Vision - New API -->
-    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/vision_bundle.js" crossorigin="anonymous"></script>
 </head>
 <body>
     <h1>Luna - Voice Assistant</h1>
@@ -235,7 +233,7 @@
         <div class="controls-section">
             <div class="status" id="status">Ready to connect</div>
 
-            <button class="connect-btn" id="connect-btn" onclick="toggleConnection()">
+            <button class="connect-btn" id="connect-btn">
                 Start Conversation
             </button>
 
@@ -265,7 +263,10 @@
     <!-- Hidden audio element for bot voice -->
     <audio id="bot-audio" autoplay></audio>
 
-    <script>
+    <script type="module">
+        // Import MediaPipe Face Detection
+        import { FilesetResolver, FaceDetector } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
+
         // State
         let peerConnection = null;
         let dataChannel = null;
@@ -476,11 +477,19 @@
                 const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
                 audioStream.getTracks().forEach(track => peerConnection.addTrack(track, audioStream));
 
+                // 3b. Add transceiver for VIDEO from server
+                // Important: Use 'sendrecv' direction so server can attach its video track
+                const videoTransceiver = peerConnection.addTransceiver('video', { direction: 'sendrecv' });
+                console.log('Added video transceiver:', videoTransceiver);
+
                 // 4. Handle incoming tracks (audio + video from Luna)
                 peerConnection.ontrack = (event) => {
-                    console.log('Got track:', event.track.kind);
+                    console.log('Got track:', event.track.kind, 'streams:', event.streams.length);
                     if (event.track.kind === 'video') {
+                        console.log('Setting video stream to luna-video element');
                         lunaVideo.srcObject = event.streams[0];
+                        // Also try playing explicitly
+                        lunaVideo.play().catch(e => console.log('Video play error:', e));
                     } else if (event.track.kind === 'audio') {
                         botAudio.srcObject = event.streams[0];
                     }
@@ -566,7 +575,11 @@
         }
 
         function handleRTVIMessage(message) {
-            console.log('RTVI message:', message);
+            // Only log important messages, not every single one
+            const importantTypes = ['bot-ready', 'error', 'user-transcription'];
+            if (importantTypes.includes(message.type)) {
+                console.log('RTVI:', message.type, message.data || '');
+            }
 
             // Handle user transcription
             if (message.type === 'user-transcription' && message.data) {
@@ -585,6 +598,9 @@
         }
 
         // ============== Initialization ==============
+        // Attach button click handler (needed because we're using ES modules)
+        connectBtn.addEventListener('click', toggleConnection);
+
         window.addEventListener('load', async () => {
             // Start face detection immediately (for preview)
             await initFaceDetection();
