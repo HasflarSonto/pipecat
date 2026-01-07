@@ -8,8 +8,8 @@ import asyncio
 import math
 import random
 import time
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any
 
 from PIL import Image, ImageDraw
 from loguru import logger
@@ -29,6 +29,13 @@ class GazeFrame(SystemFrame):
     """Frame to set the gaze direction (where Luna looks)."""
     x: float  # 0-1, where 0.5 is center
     y: float  # 0-1, where 0.5 is center
+
+
+@dataclass
+class DrawFrame(SystemFrame):
+    """Frame to display pixel art drawing on a 12x16 matrix."""
+    pixels: List[Dict[str, Any]]  # [{"x": int, "y": int, "color": str}, ...]
+    background: str = "#1E1E28"  # Default background color
 
 
 class LunaFaceRenderer(FrameProcessor):
@@ -183,10 +190,98 @@ class LunaFaceRenderer(FrameProcessor):
         # Current parameters (interpolated)
         self._current_params = dict(self.EMOTIONS["neutral"])
 
+        # Pixel art drawing state
+        self._drawing_mode = False
+        self._pixel_art: Optional[List[Dict[str, Any]]] = None
+        self._pixel_bg_color = (30, 30, 40)  # Default background
+        # Grid is 12 columns x 16 rows, each cell is 20x20 pixels on 240x320 screen
+        self._grid_cols = 12
+        self._grid_rows = 16
+        self._cell_size = 20
+
     def set_cat_mode(self, enabled: bool):
         """Toggle cat mode."""
         self.cat_mode = enabled
         logger.info(f"Cat mode: {'enabled' if enabled else 'disabled'}")
+
+    def set_pixel_art(self, pixels: List[Dict[str, Any]], background: str = "#1E1E28"):
+        """
+        Set pixel art to display. Auto-centers the drawing on the 12x16 grid.
+
+        Args:
+            pixels: List of {"x": int, "y": int, "color": str} dicts
+            background: Background color as hex string (e.g., "#1E1E28")
+        """
+        self._drawing_mode = True
+        self._pixel_art = pixels
+
+        # Parse background color
+        try:
+            bg = background.lstrip('#')
+            self._pixel_bg_color = tuple(int(bg[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            self._pixel_bg_color = (30, 30, 40)
+
+        logger.info(f"Pixel art set with {len(pixels)} pixels, bg={background}")
+
+    def clear_pixel_art(self):
+        """Clear pixel art and return to face mode."""
+        self._drawing_mode = False
+        self._pixel_art = None
+        logger.info("Pixel art cleared, returning to face mode")
+
+    def _hex_to_rgb(self, hex_color: str) -> tuple:
+        """Convert hex color to RGB tuple."""
+        try:
+            hex_color = hex_color.lstrip('#')
+            return tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
+        except Exception:
+            return (255, 255, 255)  # Default to white
+
+    def _render_pixel_art(self) -> Image.Image:
+        """Render pixel art frame with auto-centering."""
+        img = Image.new("RGB", (self.width, self.height), self._pixel_bg_color)
+        draw = ImageDraw.Draw(img)
+
+        if not self._pixel_art:
+            return img
+
+        # Find bounding box of the pixel art
+        min_x = min(p.get("x", 0) for p in self._pixel_art)
+        max_x = max(p.get("x", 0) for p in self._pixel_art)
+        min_y = min(p.get("y", 0) for p in self._pixel_art)
+        max_y = max(p.get("y", 0) for p in self._pixel_art)
+
+        # Calculate art dimensions
+        art_width = max_x - min_x + 1
+        art_height = max_y - min_y + 1
+
+        # Calculate offset to center the art on the 12x16 grid
+        offset_x = (self._grid_cols - art_width) // 2 - min_x
+        offset_y = (self._grid_rows - art_height) // 2 - min_y
+
+        # Draw each pixel
+        for pixel in self._pixel_art:
+            x = pixel.get("x", 0) + offset_x
+            y = pixel.get("y", 0) + offset_y
+            color = pixel.get("color", "#FFFFFF")
+
+            # Skip if out of bounds
+            if x < 0 or x >= self._grid_cols or y < 0 or y >= self._grid_rows:
+                continue
+
+            # Convert grid coordinates to screen coordinates
+            screen_x = x * self._cell_size
+            screen_y = y * self._cell_size
+
+            # Draw the pixel as a filled rectangle
+            rgb_color = self._hex_to_rgb(color)
+            draw.rectangle(
+                [screen_x, screen_y, screen_x + self._cell_size - 1, screen_y + self._cell_size - 1],
+                fill=rgb_color
+            )
+
+        return img
 
     def set_gaze(self, x: float, y: float):
         """Set target gaze direction (0-1, where 0.5 is center)."""
@@ -607,11 +702,15 @@ class LunaFaceRenderer(FrameProcessor):
             delta_time = current_time - last_time
             last_time = current_time
 
-            # Update animation
-            self._update_animation(delta_time)
+            # Update animation (only needed for face mode)
+            if not self._drawing_mode:
+                self._update_animation(delta_time)
 
-            # Render frame
-            img = self.render_frame()
+            # Render frame - either pixel art or face
+            if self._drawing_mode:
+                img = self._render_pixel_art()
+            else:
+                img = self.render_frame()
 
             # Convert to bytes (RGB format)
             frame_bytes = img.tobytes()
@@ -648,6 +747,11 @@ class LunaFaceRenderer(FrameProcessor):
         # Handle gaze frames
         if isinstance(frame, GazeFrame):
             self.set_gaze(frame.x, frame.y)
+            return
+
+        # Handle draw frames
+        if isinstance(frame, DrawFrame):
+            self.set_pixel_art(frame.pixels, frame.background)
             return
 
         # Handle CancelFrame - stop the render loop

@@ -209,6 +209,60 @@ async def set_emotion(params: FunctionCallParams):
     await params.result_callback(f"Emotion set to {emotion}")
 
 
+async def draw_pixel_art(params: FunctionCallParams):
+    """Draw pixel art on Luna's screen (12x16 grid)."""
+    global face_renderer
+    pixels = params.arguments.get("pixels", [])
+    background = params.arguments.get("background", "#1E1E28")
+    duration = params.arguments.get("duration", 5)  # Default 5 seconds
+    logger.info(f"Drawing pixel art with {len(pixels)} pixels, bg={background}, duration={duration}s")
+
+    if not pixels:
+        await params.result_callback("No pixels provided. Please specify pixels to draw.")
+        return
+
+    # Validate and clean up pixels
+    valid_pixels = []
+    for p in pixels:
+        x = p.get("x")
+        y = p.get("y")
+        color = p.get("color", "#FFFFFF")
+        if x is not None and y is not None:
+            valid_pixels.append({"x": int(x), "y": int(y), "color": str(color)})
+
+    if not valid_pixels:
+        await params.result_callback("No valid pixels found. Each pixel needs x, y, and color.")
+        return
+
+    # Update the face renderer
+    if face_renderer:
+        face_renderer.set_pixel_art(valid_pixels, background)
+        await params.result_callback(f"Drawing displayed for {duration} seconds")
+
+        # Auto-clear after duration
+        async def auto_clear():
+            await asyncio.sleep(duration)
+            if face_renderer:
+                face_renderer.clear_pixel_art()
+                logger.info("Auto-cleared pixel art after duration")
+
+        asyncio.create_task(auto_clear())
+    else:
+        await params.result_callback("Drawing system not ready")
+
+
+async def clear_drawing(params: FunctionCallParams):
+    """Clear pixel art and return to normal face display."""
+    global face_renderer
+    logger.info("Clearing pixel art")
+
+    if face_renderer:
+        face_renderer.clear_pixel_art()
+        await params.result_callback("Drawing cleared, face restored")
+    else:
+        await params.result_callback("Face renderer not ready")
+
+
 # ============== TOOL DEFINITIONS ==============
 
 weather_tool = FunctionSchema(
@@ -260,7 +314,43 @@ emotion_tool = FunctionSchema(
     required=["emotion"],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool])
+draw_tool = FunctionSchema(
+    name="draw_pixel_art",
+    description="Draw pixel art on your screen. Use this when the user asks you to draw something, show a picture, or illustrate. Your screen is a 12x16 pixel grid. Only specify the colored pixels (sparse format). The drawing will be auto-centered and auto-clear after the duration.",
+    properties={
+        "pixels": {
+            "type": "array",
+            "description": "Array of pixels to draw. Each pixel has x (0-11, left to right), y (0-15, top to bottom), and color (hex like #FF0000)",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X position (0-11, 0=left)"},
+                    "y": {"type": "integer", "description": "Y position (0-15, 0=top)"},
+                    "color": {"type": "string", "description": "Hex color like #FF0000 (red), #00FF00 (green), #0000FF (blue), #FFFFFF (white)"},
+                },
+                "required": ["x", "y", "color"],
+            },
+        },
+        "background": {
+            "type": "string",
+            "description": "Background color in hex (default: #1E1E28 dark)",
+        },
+        "duration": {
+            "type": "integer",
+            "description": "How long to show the drawing in seconds (default: 5). Use longer for complex drawings.",
+        },
+    },
+    required=["pixels"],
+)
+
+clear_draw_tool = FunctionSchema(
+    name="clear_drawing",
+    description="Clear your pixel art drawing and return to showing your animated face. Call this after displaying a drawing for a few seconds.",
+    properties={},
+    required=[],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool])
 
 
 # ============== BOT LOGIC ==============
@@ -282,7 +372,10 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
             video_out_enabled=True,
             video_out_width=240,
             video_out_height=320,
-            vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
+            vad_analyzer=SileroVADAnalyzer(params=VADParams(
+                stop_secs=0.5,    # Wait longer before considering speech stopped (reduces false interrupts)
+                min_volume=0.7,   # Require louder audio to trigger VAD (helps ignore speaker feedback)
+            )),
         ),
     )
 
@@ -309,6 +402,8 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("web_search", web_search)
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("set_emotion", set_emotion)
+    llm.register_function("draw_pixel_art", draw_pixel_art)
+    llm.register_function("clear_drawing", clear_drawing)
 
     # System prompt
     messages = [
@@ -349,7 +444,16 @@ OTHER RULES:
 - No special characters, emojis, or markdown
 - For current events/news, ALWAYS search first
 
-Tools: get_weather, web_search, get_current_time, set_emotion
+DRAWING - Use draw_pixel_art when asked to draw:
+- Your screen is a 12x16 pixel grid (12 wide, 16 tall)
+- Only specify colored pixels (sparse format), they auto-center
+- Use hex colors: #FF0000 red, #00FF00 green, #0000FF blue, #FFFF00 yellow, #FFFFFF white
+- Keep drawings simple (under 50 pixels) for best results
+- Set duration (default 5 seconds) - drawing auto-clears after this time
+- No need to call clear_drawing, it happens automatically
+- Examples: heart, star, smiley face, sun, house, tree
+
+Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing
 
 Be warm but brief. Your name is Luna.""",
         },

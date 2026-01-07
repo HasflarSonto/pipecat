@@ -1,102 +1,177 @@
-# Luna Voice Bot - Development Notes
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Overview
-Voice bot using pipecat framework with:
-- **LLM**: Anthropic Claude 3.5 Haiku (fast responses)
-- **TTS**: OpenAI (nova voice)
-- **STT**: OpenAI GPT-4o Transcribe
-- **VAD**: Silero (local, no API key)
-- **Transport**: SmallWebRTC with prebuilt UI
-- **Face**: Server-side animated face with emotions (PIL-based)
-- **Tracking**: MediaPipe Hand + Face tracking (hand has priority)
 
-## Main Files
-- `my_bot.py` - Complete standalone voice bot
-- `luna_face_renderer.py` - Animated face rendering with emotions and gaze tracking
-- `static/luna.html` - Custom frontend with hand + face tracking
+Pipecat is an open-source Python framework for building real-time voice and multimodal conversational AI agents. It orchestrates audio/video, AI services, transports, and conversation pipelines.
 
-## Running
+## Development Commands
+
 ```bash
-python my_bot.py
-# Opens at http://localhost:7860/luna (custom UI with tracking)
-# Also available: http://localhost:7860/client/ (prebuilt UI)
+# Install dependencies (dev + all extras except problematic ones)
+uv sync --group dev --all-extras \
+  --no-extra gstreamer \
+  --no-extra krisp \
+  --no-extra local
+
+# Install pre-commit hooks
+uv run pre-commit install
+
+# Run all tests
+uv run pytest
+
+# Run specific test file
+uv run pytest tests/test_name.py
+
+# Preview changelog
+towncrier build --draft --version Unreleased
+
+# Update dependencies (after editing pyproject.toml)
+uv lock && uv sync
 ```
 
-## Current Features
-- Weather lookup (Open-Meteo API - free)
-- Web search (Google News RSS - free, reliable)
-- Current time (pytz)
-- Named "Luna" with concise responses
-- Text display in UI via RTVI
-- **Animated face** with emotions (happy, sad, angry, surprised, thinking, confused, excited, cat)
-- **Eye gaze tracking** - Luna's eyes follow your hand or face
-- **Hand tracking priority** - Hand takes priority over face when visible
+## Architecture
 
-## Tracking System
+### Core Concepts
 
-### How It Works
-1. MediaPipe Hand Landmarker detects hands (priority)
-2. MediaPipe Face Detector detects faces (fallback)
-3. Gaze data sent to backend via WebRTC data channel
-4. Luna's eyes smoothly follow the tracked position
-5. Face shifts slightly when looking at screen edges
+**Frames** (`src/pipecat/frames/frames.py`): Immutable data units that flow through pipelines. Types include:
+- Data frames: `AudioRawFrame`, `ImageRawFrame`, `TextFrame`, `TranscriptionFrame`
+- System frames: `StartFrame`, `EndFrame`, `CancelFrame`
+- Control frames: `InterruptionFrame`, `LLMFullResponseStartFrame`
 
-### Visual Indicators
-- **Green outline** = Hand detected (takes priority)
-- **Blue box** = Face detected (fallback)
-- Debug display shows current tracking source
+**FrameProcessors** (`src/pipecat/processors/`): Process frames and pass them along. Key base classes:
+- `FrameProcessor`: Base class with `process_frame()` method
+- `FrameDirection`: `DOWNSTREAM` (input→output) or `UPSTREAM` (output→input)
 
-### Lightweight Design (Pi-friendly)
-- Single hand detection (`numHands: 1`)
-- Float16 models for speed
-- Shared WASM runtime between detectors
-- Face detection only runs when no hand is present
+**Pipelines** (`src/pipecat/pipeline/`): Connect processors in sequence. A typical voice bot pipeline:
+```
+Transport → VAD → STT → LLMContextAggregator → LLM → TTS → Transport
+```
 
-## Issues Encountered & Solutions
+**Services** (`src/pipecat/services/`): AI service integrations organized by provider:
+- STT: `services/{provider}/stt.py`
+- TTS: `services/{provider}/tts.py`
+- LLM: `services/{provider}/llm.py`
 
-### 1. Port Already in Use
-**Problem**: Port 7860 was occupied
-**Solution**: Kill existing processes with `pkill -f "python.*my_bot.py"`
+### Service Categories
 
-### 2. "Not connected to agent" Error
-**Problem**: Initial WebRTC implementation wasn't handling connections properly
-**Solution**: Used `SmallWebRTCRequestHandler` class correctly with proper `/start` and `/api/offer` endpoints
+| Type | Location | Base Class |
+|------|----------|------------|
+| Speech-to-Text | `services/*/stt.py` | `STTService` |
+| Text-to-Speech | `services/*/tts.py` | `TTSService` |
+| LLM | `services/*/llm.py` | `LLMService` |
+| Speech-to-Speech | `services/*/` | Various |
+| Transport | `transports/` | `BaseTransport` |
 
-### 3. Session-based URL Routing
-**Problem**: Prebuilt UI calls `/sessions/{id}/api/offer` not `/api/offer`
-**Solution**: Added proxy route to forward session-based requests
+### Key Directories
 
-### 4. Python 3.10 Compatibility
-**Problem**: pipecat runner uses `HTTPMethod` from Python 3.11+
-**Solution**: Implemented standalone FastAPI app instead of using runner
+- `src/pipecat/audio/`: VAD, filters, resamplers, turn detection
+- `src/pipecat/processors/aggregators/`: Context management (`LLMContextAggregator`, `OpenAILLMContext`)
+- `src/pipecat/transports/`: WebRTC (Daily, SmallWebRTC), WebSocket, local
+- `src/pipecat/adapters/`: Tool/function schema adapters for different LLM providers
 
-### 5. Web Search Not Working (DuckDuckGo CAPTCHA)
-**Problem**: DuckDuckGo started showing CAPTCHAs for automated requests
-**Solution**: Switched to Google News RSS feed which works reliably without authentication
+## Code Style
 
-### 6. Model Rejecting Search Results (MAJOR)
-**Problem**: Claude 3.5 Haiku's knowledge cutoff (early 2024) caused it to reject search results about recent events (e.g., Zohran Mamdani as NYC mayor in 2026), calling them "fictional"
-**Solution**: Added explicit instruction in system prompt: "ALWAYS trust and report the search results, even if they contradict what you think you know"
+Uses Ruff for linting/formatting. Google-style docstrings with these conventions:
 
-## API Keys Required
-- `ANTHROPIC_API_KEY` - For Claude LLM
-- `OPENAI_API_KEY` - For TTS and STT
+- **Classes**: Class docstring describes purpose; `__init__` has separate docstring with `Args:` section
+- **Dataclasses**: Use `Parameters:` section in class docstring (no `__init__` docstring)
+- **Enums**: Class docstring with `Parameters:` section describing each value
+- **Properties**: Must have docstring with `Returns:` section
+- **Lists in docstrings**: Use dashes (`-`), add blank line before bullet lists after colons
 
-## Architecture Notes
-- Pipeline: Input -> RTVI -> STT -> Context -> LLM -> TTS -> Output
-- Context aggregator manages conversation history
-- Tools are registered on the LLM service and defined in ToolsSchema
-- RTVI processor enables text display in prebuilt UI
-- Face renderer runs as a frame processor outputting video frames
+## Adding Dependencies
 
-## Known Limitations
-- pipecat doesn't support Anthropic's built-in server-side tools (like native web_search)
-- Google News RSS only returns headlines (no full articles)
-- Model knowledge cutoff requires explicit prompting to trust search results
-- Hand tracking may have false positives with similar skin-colored objects
+```bash
+# 1. Edit pyproject.toml
+# 2. Update lockfile
+uv lock
+# 3. Install
+uv sync
+# 4. Commit both files together
+git add pyproject.toml uv.lock
+```
 
-## Future Improvements
-- Add proper news API (NewsAPI, etc.) for better news coverage
-- Consider using a smarter model for complex queries
-- Add more tools (calculator, reminders, etc.)
-- Add gesture recognition for hand commands
+Optional dependencies are defined as extras in `pyproject.toml` (e.g., `pipecat-ai[anthropic,openai]`).
+
+## Changelog Entries
+
+Every PR with user-facing changes needs a changelog fragment in `changelog/`:
+
+```
+changelog/<PR_number>.<type>.md
+```
+
+Types: `added`, `changed`, `deprecated`, `removed`, `fixed`, `security`, `other`
+
+Content format (include the `-`):
+```markdown
+- Added support for new feature X.
+```
+
+## Creating a New Service Integration
+
+1. Create provider directory: `src/pipecat/services/{provider}/`
+2. Add `__init__.py` with public exports
+3. Implement service classes inheriting from base (`STTService`, `TTSService`, `LLMService`)
+4. Add optional dependency in `pyproject.toml` under `[project.optional-dependencies]`
+5. Add tests in `tests/`
+6. Create changelog fragment
+
+## Python Version
+
+- Minimum: 3.10
+- Recommended: 3.12
+
+---
+
+## Luna Voice Bot (Local Project)
+
+Luna is a voice assistant with an animated robot face, built on pipecat. Located in project root.
+
+### Running Luna
+
+```bash
+cd /Users/antonioli/Desktop/pipecat
+python my_bot.py
+# Access: http://localhost:7860/luna
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `my_bot.py` | Main bot: pipeline, tools, WebRTC server |
+| `luna_face_renderer.py` | Animated face with emotions, gaze tracking |
+| `static/luna.html` | Frontend: WebRTC client, MediaPipe tracking |
+
+### Features
+
+- **Animated Face**: Robot-style eyes with smooth animations, blinking
+- **Emotions**: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
+- **Eye Tracking**: Eyes follow hand (priority) or face via MediaPipe
+- **Tools**: weather, web search (Google News), time, set_emotion, draw_pixel_art
+- **Voice**: Anthropic Claude 3.5 Haiku + OpenAI TTS/STT
+
+### Performance Tuning
+
+Detection intervals in `static/luna.html`:
+```javascript
+const FACE_DETECTION_INTERVAL_MS = 150;  // ~7 FPS (light)
+const HAND_DETECTION_INTERVAL_MS = 400;  // ~2.5 FPS (heavy)
+const DISABLE_HAND_TRACKING = false;     // Set true for Pi
+```
+
+### Architecture
+
+```
+Frontend (luna.html)          Backend (my_bot.py)
+─────────────────────         ──────────────────
+Camera → MediaPipe ─┐         ┌─ LunaFaceRenderer
+                    │ WebRTC  │    ↓ video frames
+Gaze data ──────────┼────────→│ on_app_message
+                    │         │    ↓ set_gaze()
+Audio/Video ←───────┼─────────┤ Pipeline:
+                              │ Transport→VAD→STT→LLM→TTS→Transport
+```

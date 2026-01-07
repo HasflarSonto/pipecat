@@ -306,7 +306,7 @@
                 <video id="camera-video" autoplay playsinline muted></video>
                 <canvas id="face-overlay"></canvas>
             </div>
-            <span class="section-label">Your Camera (Hand > Face Tracking)</span>
+            <span class="section-label" id="camera-label">Your Camera (Face Tracking)</span>
         </div>
     </div>
 
@@ -335,6 +335,19 @@
         let lastGazeUpdate = 0;
         let lastVideoTime = -1;
         let trackingSource = 'none'; // 'hand', 'face', or 'none'
+        let frameCount = 0;
+        let lastDetectionTime = 0;
+        // Detection intervals (ms) - higher = less CPU
+        const FACE_DETECTION_INTERVAL_MS = 150;  // Face: ~7 FPS
+        const HAND_DETECTION_INTERVAL_MS = 400;  // Hand: ~2.5 FPS (much heavier model)
+        let lastFaceDetectionTime = 0;
+        let lastHandDetectionTime = 0;
+        // Sticky tracking - remember last known positions to avoid flashing
+        let lastHandGaze = null;  // {x, y} or null if no hand
+        let lastFaceGaze = null;  // {x, y} or null if no face
+        let handVisible = false;  // Is hand currently detected?
+        // Set to true to completely disable hand tracking
+        const DISABLE_HAND_TRACKING = false;
 
         // DOM Elements
         const statusEl = document.getElementById('status');
@@ -394,9 +407,11 @@
         }
 
         function startBotMessage() {
-            // Just reset the buffer - we'll create the element when text arrives
-            botTextBuffer = '';
-            currentBotMessage = null;
+            // Only reset if there's no message currently in progress
+            // This prevents clearing the buffer when tool calls trigger multiple bot-llm-started events
+            if (!currentBotMessage) {
+                botTextBuffer = '';
+            }
         }
 
         function appendBotText(text) {
@@ -461,20 +476,22 @@
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
                 );
 
-                // Initialize Hand Landmarker (priority) - lightweight model
-                handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                    baseOptions: {
-                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-                        delegate: "GPU"
-                    },
-                    runningMode: "VIDEO",
-                    numHands: 1,  // Only detect one hand to save resources
-                    minHandDetectionConfidence: 0.5,
-                    minHandPresenceConfidence: 0.5,
-                    minTrackingConfidence: 0.5
-                });
+                // Initialize Hand Landmarker (priority) - skip if disabled for Pi
+                if (!DISABLE_HAND_TRACKING) {
+                    handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                        baseOptions: {
+                            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                            delegate: "GPU"
+                        },
+                        runningMode: "VIDEO",
+                        numHands: 1,
+                        minHandDetectionConfidence: 0.5,
+                        minHandPresenceConfidence: 0.5,
+                        minTrackingConfidence: 0.5
+                    });
+                }
 
-                // Initialize Face Detector (fallback)
+                // Initialize Face Detector
                 faceDetector = await FaceDetector.createFromOptions(vision, {
                     baseOptions: {
                         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
@@ -487,17 +504,21 @@
                 // Start detection loop
                 isTracking = true;
                 trackingDot.classList.add('active');
-                trackingStatus.textContent = 'Tracking: Active (Hand > Face)';
+                trackingStatus.textContent = DISABLE_HAND_TRACKING
+                    ? 'Tracking: Face Only (Pi mode)'
+                    : 'Tracking: Hand > Face';
                 runDetection();
 
-                console.log('Hand & Face detection initialized');
+                console.log(DISABLE_HAND_TRACKING ? 'Face detection initialized (Pi mode)' : 'Hand & Face detection initialized');
             } catch (error) {
                 console.error('Failed to init tracking:', error);
                 trackingStatus.textContent = 'Tracking: Error - ' + error.message;
             }
         }
 
-        // Main detection loop - runs hand detection first (priority), then face as fallback
+        // Main detection loop - uses SEPARATE throttling for hand vs face
+        // Hand detection is heavy (~50% CPU) so runs less often
+        // Face detection is lighter, runs more frequently
         function runDetection() {
             if (!isTracking) {
                 requestAnimationFrame(runDetection);
@@ -505,93 +526,114 @@
             }
 
             // Only process when we have a new video frame
-            if (cameraVideo.readyState >= 2 && cameraVideo.currentTime !== lastVideoTime) {
-                lastVideoTime = cameraVideo.currentTime;
-                const startTimeMs = performance.now();
+            if (cameraVideo.readyState < 2 || cameraVideo.currentTime === lastVideoTime) {
+                requestAnimationFrame(runDetection);
+                return;
+            }
 
-                try {
-                    // Clear overlay
-                    overlayCtx.clearRect(0, 0, faceOverlay.width, faceOverlay.height);
+            lastVideoTime = cameraVideo.currentTime;
+            const now = performance.now();
+            const startTimeMs = now;
 
-                    let gazeX = null;
-                    let gazeY = null;
+            try {
+                // Clear overlay
+                overlayCtx.clearRect(0, 0, faceOverlay.width, faceOverlay.height);
 
-                    // 1. Try hand detection first (PRIORITY)
-                    if (handLandmarker) {
-                        const handResults = handLandmarker.detectForVideo(cameraVideo, startTimeMs);
-                        if (handResults.landmarks && handResults.landmarks.length > 0) {
-                            // Use the first hand detected
-                            const landmarks = handResults.landmarks[0];
+                // Check if it's time for hand detection (runs less often - expensive)
+                const shouldRunHand = handLandmarker && (now - lastHandDetectionTime >= HAND_DETECTION_INTERVAL_MS);
 
-                            // Calculate hand center from wrist (0) and middle finger MCP (9)
-                            // This gives a good center point for the palm
-                            const wrist = landmarks[0];
-                            const middleMCP = landmarks[9];
-                            const handCenterX = (wrist.x + middleMCP.x) / 2;
-                            const handCenterY = (wrist.y + middleMCP.y) / 2;
+                // Check if it's time for face detection (runs more often - cheaper)
+                const shouldRunFace = faceDetector && (now - lastFaceDetectionTime >= FACE_DETECTION_INTERVAL_MS);
 
-                            // Draw hand landmarks (simplified - just palm outline)
-                            drawHandLandmarks(landmarks);
+                // 1. Run hand detection if scheduled (updates handVisible and lastHandGaze)
+                if (shouldRunHand) {
+                    lastHandDetectionTime = now;
+                    const handResults = handLandmarker.detectForVideo(cameraVideo, startTimeMs);
+                    if (handResults.landmarks && handResults.landmarks.length > 0) {
+                        const landmarks = handResults.landmarks[0];
+                        const wrist = landmarks[0];
+                        const middleMCP = landmarks[9];
+                        const handCenterX = (wrist.x + middleMCP.x) / 2;
+                        const handCenterY = (wrist.y + middleMCP.y) / 2;
 
-                            // Invert X because camera is mirrored
-                            gazeX = 1 - handCenterX;
-                            gazeY = handCenterY;
-                            trackingSource = 'hand';
-                        }
+                        lastHandGaze = { x: 1 - handCenterX, y: handCenterY };
+                        handVisible = true;
+                        drawHandLandmarks(landmarks);
+                    } else {
+                        // Hand detection ran but found no hand
+                        handVisible = false;
+                        lastHandGaze = null;
                     }
+                }
 
-                    // 2. If no hand detected, try face detection (FALLBACK)
-                    if (gazeX === null && faceDetector) {
-                        const faceResults = faceDetector.detectForVideo(cameraVideo, startTimeMs);
-                        if (faceResults.detections && faceResults.detections.length > 0) {
-                            // Find largest face
-                            let largestFace = faceResults.detections[0];
-                            let largestArea = 0;
-                            for (const detection of faceResults.detections) {
-                                const bbox = detection.boundingBox;
-                                const area = bbox.width * bbox.height;
-                                if (area > largestArea) {
-                                    largestArea = area;
-                                    largestFace = detection;
-                                }
+                // 2. Run face detection if scheduled (updates lastFaceGaze)
+                if (shouldRunFace) {
+                    lastFaceDetectionTime = now;
+                    const faceResults = faceDetector.detectForVideo(cameraVideo, startTimeMs);
+                    if (faceResults.detections && faceResults.detections.length > 0) {
+                        let largestFace = faceResults.detections[0];
+                        let largestArea = 0;
+                        for (const detection of faceResults.detections) {
+                            const bbox = detection.boundingBox;
+                            const area = bbox.width * bbox.height;
+                            if (area > largestArea) {
+                                largestArea = area;
+                                largestFace = detection;
                             }
-
-                            const bbox = largestFace.boundingBox;
-                            drawFaceBoundingBox(bbox);
-
-                            // Calculate normalized face center
-                            const normalizedX = (bbox.originX + bbox.width / 2) / cameraVideo.videoWidth;
-                            const normalizedY = (bbox.originY + bbox.height / 2) / cameraVideo.videoHeight;
-
-                            gazeX = 1 - normalizedX;  // Invert X because camera is mirrored
-                            gazeY = normalizedY;
-                            trackingSource = 'face';
                         }
-                    }
 
-                    // 3. Update debug and send gaze if we have tracking
-                    if (gazeX !== null) {
-                        const sourceLabel = trackingSource === 'hand' ? 'Hand' : 'Face';
-                        gazeDebug.textContent = `${sourceLabel}: X=${gazeX.toFixed(2)}, Y=${gazeY.toFixed(2)}`;
+                        const bbox = largestFace.boundingBox;
+                        const normalizedX = (bbox.originX + bbox.width / 2) / cameraVideo.videoWidth;
+                        const normalizedY = (bbox.originY + bbox.height / 2) / cameraVideo.videoHeight;
+                        lastFaceGaze = { x: 1 - normalizedX, y: normalizedY };
 
-                        // Send gaze to backend (throttle to 10 updates/sec)
-                        const now = Date.now();
-                        if (dataChannel && dataChannel.readyState === 'open' && now - lastGazeUpdate > 100) {
-                            dataChannel.send(JSON.stringify({
-                                type: 'gaze',
-                                x: gazeX,
-                                y: gazeY
-                            }));
-                            lastGazeUpdate = now;
+                        // Only draw face box if hand is NOT visible
+                        if (!handVisible) {
+                            drawFaceBoundingBox(bbox);
                         }
                     } else {
-                        gazeDebug.textContent = 'No hand or face detected';
-                        trackingSource = 'none';
+                        lastFaceGaze = null;
                     }
-
-                } catch (e) {
-                    console.error('Detection error:', e);
                 }
+
+                // 3. Decide what gaze to use: HAND has priority, then FACE
+                // Use sticky values - don't switch between detections
+                let gazeX = null;
+                let gazeY = null;
+
+                if (handVisible && lastHandGaze) {
+                    // Hand is currently visible - use hand gaze
+                    gazeX = lastHandGaze.x;
+                    gazeY = lastHandGaze.y;
+                    trackingSource = 'hand';
+                } else if (lastFaceGaze) {
+                    // No hand visible - use face gaze
+                    gazeX = lastFaceGaze.x;
+                    gazeY = lastFaceGaze.y;
+                    trackingSource = 'face';
+                }
+
+                // 4. Update debug and send gaze if we have tracking
+                if (gazeX !== null) {
+                    const sourceLabel = trackingSource === 'hand' ? 'Hand' : 'Face';
+                    gazeDebug.textContent = `${sourceLabel}: X=${gazeX.toFixed(2)}, Y=${gazeY.toFixed(2)}`;
+
+                    // Send gaze to backend (throttle to 10 updates/sec)
+                    const currentTime = Date.now();
+                    if (dataChannel && dataChannel.readyState === 'open' && currentTime - lastGazeUpdate > 100) {
+                        dataChannel.send(JSON.stringify({
+                            type: 'gaze',
+                            x: gazeX,
+                            y: gazeY
+                        }));
+                        lastGazeUpdate = currentTime;
+                    }
+                } else {
+                    gazeDebug.textContent = 'No hand or face detected';
+                    trackingSource = 'none';
+                }
+            } catch (e) {
+                console.error('Detection error:', e);
             }
 
             requestAnimationFrame(runDetection);
