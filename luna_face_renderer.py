@@ -144,7 +144,7 @@ class LunaFaceRenderer(FrameProcessor):
 
         # Face center position
         self.center_x = width // 2
-        self.center_y = height // 2 - 20  # Slightly above center
+        self.center_y = height // 2 - 50  # Shifted up for better framing
 
         # Eye positions (relative to center)
         self.eye_spacing = 50

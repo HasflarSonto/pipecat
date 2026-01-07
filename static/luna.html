@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Luna - Voice Assistant with Face Tracking</title>
+    <title>Luna - Voice Assistant with Hand & Face Tracking</title>
     <style>
         * {
             margin: 0;
@@ -306,7 +306,7 @@
                 <video id="camera-video" autoplay playsinline muted></video>
                 <canvas id="face-overlay"></canvas>
             </div>
-            <span class="section-label">Your Camera (Face Tracking)</span>
+            <span class="section-label">Your Camera (Hand > Face Tracking)</span>
         </div>
     </div>
 
@@ -321,8 +321,8 @@
     <audio id="bot-audio" autoplay></audio>
 
     <script type="module">
-        // Import MediaPipe Face Detection
-        import { FilesetResolver, FaceDetector } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
+        // Import MediaPipe Face Detection and Hand Landmarker
+        import { FilesetResolver, FaceDetector, HandLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest";
 
         // State
         let peerConnection = null;
@@ -330,9 +330,11 @@
         let isConnected = false;
         let cameraStream = null;
         let faceDetector = null;
-        let isTrackingFace = false;
+        let handLandmarker = null;
+        let isTracking = false;
         let lastGazeUpdate = 0;
         let lastVideoTime = -1;
+        let trackingSource = 'none'; // 'hand', 'face', or 'none'
 
         // DOM Elements
         const statusEl = document.getElementById('status');
@@ -430,10 +432,10 @@
             }
         }
 
-        // ============== MediaPipe Face Detection (New API) ==============
-        async function initFaceDetection() {
+        // ============== MediaPipe Hand & Face Detection ==============
+        async function initTracking() {
             try {
-                trackingStatus.textContent = 'Face tracking: Initializing...';
+                trackingStatus.textContent = 'Tracking: Initializing...';
 
                 // Start camera first
                 cameraStream = await navigator.mediaDevices.getUserMedia({
@@ -454,11 +456,25 @@
                 faceOverlay.width = 320;
                 faceOverlay.height = 240;
 
-                // Initialize MediaPipe Face Detector using the new Tasks Vision API
+                // Initialize MediaPipe Vision (shared between face and hand detection)
                 const vision = await FilesetResolver.forVisionTasks(
                     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
                 );
 
+                // Initialize Hand Landmarker (priority) - lightweight model
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1,  // Only detect one hand to save resources
+                    minHandDetectionConfidence: 0.5,
+                    minHandPresenceConfidence: 0.5,
+                    minTrackingConfidence: 0.5
+                });
+
+                // Initialize Face Detector (fallback)
                 faceDetector = await FaceDetector.createFromOptions(vision, {
                     baseOptions: {
                         modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/blaze_face_short_range.tflite",
@@ -469,106 +485,176 @@
                 });
 
                 // Start detection loop
-                isTrackingFace = true;
+                isTracking = true;
                 trackingDot.classList.add('active');
-                trackingStatus.textContent = 'Face tracking: Active';
-                detectFace();
+                trackingStatus.textContent = 'Tracking: Active (Hand > Face)';
+                runDetection();
 
-                console.log('Face detection initialized with new MediaPipe Tasks Vision API');
+                console.log('Hand & Face detection initialized');
             } catch (error) {
-                console.error('Failed to init face detection:', error);
-                trackingStatus.textContent = 'Face tracking: Error - ' + error.message;
+                console.error('Failed to init tracking:', error);
+                trackingStatus.textContent = 'Tracking: Error - ' + error.message;
             }
         }
 
-        function detectFace() {
-            if (!isTrackingFace || !faceDetector) {
-                requestAnimationFrame(detectFace);
+        // Main detection loop - runs hand detection first (priority), then face as fallback
+        function runDetection() {
+            if (!isTracking) {
+                requestAnimationFrame(runDetection);
                 return;
             }
 
             // Only process when we have a new video frame
             if (cameraVideo.readyState >= 2 && cameraVideo.currentTime !== lastVideoTime) {
                 lastVideoTime = cameraVideo.currentTime;
+                const startTimeMs = performance.now();
 
                 try {
-                    const startTimeMs = performance.now();
-                    const detections = faceDetector.detectForVideo(cameraVideo, startTimeMs);
-                    processResults(detections);
+                    // Clear overlay
+                    overlayCtx.clearRect(0, 0, faceOverlay.width, faceOverlay.height);
+
+                    let gazeX = null;
+                    let gazeY = null;
+
+                    // 1. Try hand detection first (PRIORITY)
+                    if (handLandmarker) {
+                        const handResults = handLandmarker.detectForVideo(cameraVideo, startTimeMs);
+                        if (handResults.landmarks && handResults.landmarks.length > 0) {
+                            // Use the first hand detected
+                            const landmarks = handResults.landmarks[0];
+
+                            // Calculate hand center from wrist (0) and middle finger MCP (9)
+                            // This gives a good center point for the palm
+                            const wrist = landmarks[0];
+                            const middleMCP = landmarks[9];
+                            const handCenterX = (wrist.x + middleMCP.x) / 2;
+                            const handCenterY = (wrist.y + middleMCP.y) / 2;
+
+                            // Draw hand landmarks (simplified - just palm outline)
+                            drawHandLandmarks(landmarks);
+
+                            // Invert X because camera is mirrored
+                            gazeX = 1 - handCenterX;
+                            gazeY = handCenterY;
+                            trackingSource = 'hand';
+                        }
+                    }
+
+                    // 2. If no hand detected, try face detection (FALLBACK)
+                    if (gazeX === null && faceDetector) {
+                        const faceResults = faceDetector.detectForVideo(cameraVideo, startTimeMs);
+                        if (faceResults.detections && faceResults.detections.length > 0) {
+                            // Find largest face
+                            let largestFace = faceResults.detections[0];
+                            let largestArea = 0;
+                            for (const detection of faceResults.detections) {
+                                const bbox = detection.boundingBox;
+                                const area = bbox.width * bbox.height;
+                                if (area > largestArea) {
+                                    largestArea = area;
+                                    largestFace = detection;
+                                }
+                            }
+
+                            const bbox = largestFace.boundingBox;
+                            drawFaceBoundingBox(bbox);
+
+                            // Calculate normalized face center
+                            const normalizedX = (bbox.originX + bbox.width / 2) / cameraVideo.videoWidth;
+                            const normalizedY = (bbox.originY + bbox.height / 2) / cameraVideo.videoHeight;
+
+                            gazeX = 1 - normalizedX;  // Invert X because camera is mirrored
+                            gazeY = normalizedY;
+                            trackingSource = 'face';
+                        }
+                    }
+
+                    // 3. Update debug and send gaze if we have tracking
+                    if (gazeX !== null) {
+                        const sourceLabel = trackingSource === 'hand' ? 'Hand' : 'Face';
+                        gazeDebug.textContent = `${sourceLabel}: X=${gazeX.toFixed(2)}, Y=${gazeY.toFixed(2)}`;
+
+                        // Send gaze to backend (throttle to 10 updates/sec)
+                        const now = Date.now();
+                        if (dataChannel && dataChannel.readyState === 'open' && now - lastGazeUpdate > 100) {
+                            dataChannel.send(JSON.stringify({
+                                type: 'gaze',
+                                x: gazeX,
+                                y: gazeY
+                            }));
+                            lastGazeUpdate = now;
+                        }
+                    } else {
+                        gazeDebug.textContent = 'No hand or face detected';
+                        trackingSource = 'none';
+                    }
+
                 } catch (e) {
                     console.error('Detection error:', e);
                 }
             }
 
-            requestAnimationFrame(detectFace);
+            requestAnimationFrame(runDetection);
         }
 
-        function processResults(result) {
-            // Clear overlay
-            overlayCtx.clearRect(0, 0, faceOverlay.width, faceOverlay.height);
+        // Draw simplified hand landmarks (palm outline + finger tips)
+        function drawHandLandmarks(landmarks) {
+            const scaleX = faceOverlay.width / cameraVideo.videoWidth;
+            const scaleY = faceOverlay.height / cameraVideo.videoHeight;
 
-            if (result.detections && result.detections.length > 0) {
-                // Find the largest face
-                let largestFace = result.detections[0];
-                let largestArea = 0;
+            // Palm connections (simplified)
+            const palmIndices = [0, 1, 5, 9, 13, 17, 0];  // Wrist to each finger base, back to wrist
 
-                for (const detection of result.detections) {
-                    const bbox = detection.boundingBox;
-                    const area = bbox.width * bbox.height;
-                    if (area > largestArea) {
-                        largestArea = area;
-                        largestFace = detection;
-                    }
+            overlayCtx.strokeStyle = '#4CAF50';  // Green for hand
+            overlayCtx.lineWidth = 2;
+            overlayCtx.beginPath();
+
+            for (let i = 0; i < palmIndices.length; i++) {
+                const landmark = landmarks[palmIndices[i]];
+                const x = landmark.x * cameraVideo.videoWidth * scaleX;
+                const y = landmark.y * cameraVideo.videoHeight * scaleY;
+                if (i === 0) {
+                    overlayCtx.moveTo(x, y);
+                } else {
+                    overlayCtx.lineTo(x, y);
                 }
-
-                const bbox = largestFace.boundingBox;
-
-                // Scale coordinates from video (640x480) to canvas (320x240)
-                const scaleX = faceOverlay.width / cameraVideo.videoWidth;
-                const scaleY = faceOverlay.height / cameraVideo.videoHeight;
-
-                const x = bbox.originX * scaleX;
-                const y = bbox.originY * scaleY;
-                const w = bbox.width * scaleX;
-                const h = bbox.height * scaleY;
-
-                // Draw bounding box
-                overlayCtx.strokeStyle = '#7c83fd';
-                overlayCtx.lineWidth = 3;
-                overlayCtx.strokeRect(x, y, w, h);
-
-                // Draw center dot
-                const centerX = x + w / 2;
-                const centerY = y + h / 2;
-                overlayCtx.fillStyle = '#7c83fd';
-                overlayCtx.beginPath();
-                overlayCtx.arc(centerX, centerY, 5, 0, Math.PI * 2);
-                overlayCtx.fill();
-
-                // Calculate gaze direction (normalized 0-1)
-                // Since camera is mirrored, we invert X
-                const normalizedX = (bbox.originX + bbox.width / 2) / cameraVideo.videoWidth;
-                const normalizedY = (bbox.originY + bbox.height / 2) / cameraVideo.videoHeight;
-
-                const gazeX = 1 - normalizedX;  // Invert X because camera is mirrored
-                const gazeY = normalizedY;
-
-                // Update debug
-                gazeDebug.textContent = `Gaze: X=${gazeX.toFixed(2)}, Y=${gazeY.toFixed(2)}`;
-
-                // Send gaze to backend (throttle to 10 updates/sec)
-                const now = Date.now();
-                if (dataChannel && dataChannel.readyState === 'open' && now - lastGazeUpdate > 100) {
-                    dataChannel.send(JSON.stringify({
-                        type: 'gaze',
-                        x: gazeX,
-                        y: gazeY
-                    }));
-                    lastGazeUpdate = now;
-                }
-            } else {
-                gazeDebug.textContent = 'Gaze: No face detected';
             }
+            overlayCtx.stroke();
+
+            // Draw center point (between wrist and middle finger)
+            const wrist = landmarks[0];
+            const middleMCP = landmarks[9];
+            const centerX = ((wrist.x + middleMCP.x) / 2) * cameraVideo.videoWidth * scaleX;
+            const centerY = ((wrist.y + middleMCP.y) / 2) * cameraVideo.videoHeight * scaleY;
+
+            overlayCtx.fillStyle = '#4CAF50';
+            overlayCtx.beginPath();
+            overlayCtx.arc(centerX, centerY, 6, 0, Math.PI * 2);
+            overlayCtx.fill();
+        }
+
+        // Draw face bounding box
+        function drawFaceBoundingBox(bbox) {
+            const scaleX = faceOverlay.width / cameraVideo.videoWidth;
+            const scaleY = faceOverlay.height / cameraVideo.videoHeight;
+
+            const x = bbox.originX * scaleX;
+            const y = bbox.originY * scaleY;
+            const w = bbox.width * scaleX;
+            const h = bbox.height * scaleY;
+
+            // Draw bounding box
+            overlayCtx.strokeStyle = '#7c83fd';  // Blue for face
+            overlayCtx.lineWidth = 3;
+            overlayCtx.strokeRect(x, y, w, h);
+
+            // Draw center dot
+            const centerX = x + w / 2;
+            const centerY = y + h / 2;
+            overlayCtx.fillStyle = '#7c83fd';
+            overlayCtx.beginPath();
+            overlayCtx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+            overlayCtx.fill();
         }
 
         // ============== WebRTC Connection ==============
@@ -761,13 +847,13 @@
         connectBtn.addEventListener('click', toggleConnection);
 
         window.addEventListener('load', async () => {
-            // Start face detection immediately (for preview)
-            await initFaceDetection();
+            // Start hand + face detection immediately (for preview)
+            await initTracking();
         });
 
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
-            isTrackingFace = false;
+            isTracking = false;
             disconnect();
             if (cameraStream) {
                 cameraStream.getTracks().forEach(track => track.stop());
