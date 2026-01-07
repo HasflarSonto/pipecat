@@ -181,33 +181,88 @@
             padding: 20px;
             background-color: #2a2a4e;
             border-radius: 15px;
-            max-height: 200px;
+            max-height: 300px;
             overflow-y: auto;
         }
 
         .transcript h3 {
-            margin-bottom: 10px;
+            margin-bottom: 15px;
             color: #7c83fd;
+            font-size: 16px;
         }
 
         .transcript-content {
             font-size: 14px;
-            line-height: 1.6;
+            line-height: 1.8;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
         }
 
         .transcript-line {
-            margin: 5px 0;
-            padding: 5px 10px;
-            border-radius: 5px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            max-width: 85%;
+            word-wrap: break-word;
         }
 
         .transcript-line.user {
-            background-color: #3a3a5e;
-            text-align: right;
+            background-color: #4a4a7e;
+            align-self: flex-end;
+            border-bottom-right-radius: 4px;
         }
 
         .transcript-line.assistant {
-            background-color: #2e3a5e;
+            background-color: #3a3a6e;
+            align-self: flex-start;
+            border-bottom-left-radius: 4px;
+        }
+
+        .transcript-line.streaming {
+            opacity: 0.9;
+        }
+
+        .transcript-line.streaming::after {
+            content: '▋';
+            animation: blink 1s infinite;
+            margin-left: 2px;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .transcript-label {
+            font-size: 11px;
+            color: #8888aa;
+            margin-bottom: 4px;
+            font-weight: 500;
+        }
+
+        .speaking-indicator {
+            display: none;
+            padding: 10px 14px;
+            background-color: #3a3a6e;
+            border-radius: 12px;
+            align-self: flex-start;
+            color: #8888cc;
+            font-style: italic;
+        }
+
+        .speaking-indicator.active {
+            display: block;
+        }
+
+        .speaking-indicator::after {
+            content: '...';
+            animation: dots 1.5s infinite;
+        }
+
+        @keyframes dots {
+            0%, 20% { content: '.'; }
+            40% { content: '..'; }
+            60%, 100% { content: '...'; }
         }
 
         .gaze-debug {
@@ -257,7 +312,9 @@
 
     <div class="transcript">
         <h3>Conversation</h3>
-        <div class="transcript-content" id="transcript"></div>
+        <div class="transcript-content" id="transcript">
+            <div class="speaking-indicator" id="user-speaking">Listening</div>
+        </div>
     </div>
 
     <!-- Hidden audio element for bot voice -->
@@ -290,17 +347,87 @@
         const botAudio = document.getElementById('bot-audio');
         const overlayCtx = faceOverlay.getContext('2d');
 
+        // State for transcript handling
+        let currentBotMessage = null;
+        let botTextBuffer = '';
+        let userSpeakingIndicator = null;
+
         function setStatus(text, type = '') {
             statusEl.textContent = text;
             statusEl.className = 'status ' + type;
         }
 
-        function addTranscript(text, role) {
+        function addTranscript(text, role, isStreaming = false) {
             const line = document.createElement('div');
-            line.className = 'transcript-line ' + role;
-            line.textContent = (role === 'user' ? 'You: ' : 'Luna: ') + text;
-            transcriptEl.appendChild(line);
-            transcriptEl.scrollTop = transcriptEl.scrollHeight;
+            line.className = 'transcript-line ' + role + (isStreaming ? ' streaming' : '');
+
+            const label = document.createElement('div');
+            label.className = 'transcript-label';
+            label.textContent = role === 'user' ? 'You' : 'Luna';
+
+            const content = document.createElement('div');
+            content.textContent = text;
+
+            line.appendChild(label);
+            line.appendChild(content);
+
+            // Insert before the speaking indicator if it exists
+            const speakingIndicator = document.getElementById('user-speaking');
+            if (speakingIndicator) {
+                transcriptEl.insertBefore(line, speakingIndicator);
+            } else {
+                transcriptEl.appendChild(line);
+            }
+            scrollToBottom();
+            return line;
+        }
+
+        function scrollToBottom() {
+            // Use smooth scroll to keep newest content visible
+            const transcriptContainer = document.querySelector('.transcript');
+            transcriptContainer.scrollTo({
+                top: transcriptContainer.scrollHeight,
+                behavior: 'smooth'
+            });
+        }
+
+        function startBotMessage() {
+            // Just reset the buffer - we'll create the element when text arrives
+            botTextBuffer = '';
+            currentBotMessage = null;
+        }
+
+        function appendBotText(text) {
+            // Only create the message element when we have actual text
+            if (!currentBotMessage && text.trim()) {
+                currentBotMessage = addTranscript('', 'assistant', true);
+            }
+            if (currentBotMessage) {
+                botTextBuffer += text;
+                const contentEl = currentBotMessage.querySelector('div:last-child');
+                if (contentEl) {
+                    contentEl.textContent = botTextBuffer;
+                }
+                scrollToBottom();
+            }
+        }
+
+        function finishBotMessage() {
+            if (currentBotMessage) {
+                currentBotMessage.classList.remove('streaming');
+            }
+            currentBotMessage = null;
+            botTextBuffer = '';
+        }
+
+        function setUserSpeaking(speaking) {
+            const indicator = document.getElementById('user-speaking');
+            if (indicator) {
+                indicator.classList.toggle('active', speaking);
+                if (speaking) {
+                    scrollToBottom();
+                }
+            }
         }
 
         // ============== MediaPipe Face Detection (New API) ==============
@@ -575,25 +702,57 @@
         }
 
         function handleRTVIMessage(message) {
-            // Only log important messages, not every single one
-            const importantTypes = ['bot-ready', 'error', 'user-transcription'];
+            // Only log important messages for debugging
+            const importantTypes = ['bot-ready', 'error', 'user-transcription', 'bot-llm-started', 'bot-llm-stopped'];
             if (importantTypes.includes(message.type)) {
                 console.log('RTVI:', message.type, message.data || '');
             }
 
-            // Handle user transcription
-            if (message.type === 'user-transcription' && message.data) {
-                addTranscript(message.data.text, 'user');
-            }
+            switch (message.type) {
+                // User speaking indicators
+                case 'user-started-speaking':
+                    setUserSpeaking(true);
+                    break;
 
-            // Handle bot output (assistant responses)
-            if (message.type === 'bot-tts-text' && message.data) {
-                addTranscript(message.data.text, 'assistant');
-            }
+                case 'user-stopped-speaking':
+                    setUserSpeaking(false);
+                    break;
 
-            // Handle bot ready
-            if (message.type === 'bot-ready') {
-                console.log('Bot is ready');
+                // User final transcription
+                case 'user-transcription':
+                    if (message.data && message.data.text) {
+                        setUserSpeaking(false);
+                        addTranscript(message.data.text, 'user');
+                    }
+                    break;
+
+                // Bot starts generating (LLM)
+                case 'bot-llm-started':
+                    startBotMessage();
+                    break;
+
+                // Bot LLM text (streaming words)
+                case 'bot-llm-text':
+                    if (message.data && message.data.text) {
+                        appendBotText(message.data.text);
+                    }
+                    break;
+
+                // Bot stops generating
+                case 'bot-llm-stopped':
+                    finishBotMessage();
+                    break;
+
+                // TTS text - ignore since we use bot-llm-text for streaming
+                // (bot-tts-text sends per-sentence which causes duplicates)
+                case 'bot-tts-text':
+                    // Ignored - using bot-llm-text instead
+                    break;
+
+                // Bot ready
+                case 'bot-ready':
+                    console.log('Bot is ready');
+                    break;
             }
         }
 

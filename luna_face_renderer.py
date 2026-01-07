@@ -304,8 +304,8 @@ class LunaFaceRenderer(FrameProcessor):
         # Gaze offset - move eyes based on where we're looking
         # gaze_x: 0=look left, 0.5=center, 1=look right
         # gaze_y: 0=look up, 0.5=center, 1=look down
-        gaze_range_x = 35  # Max pixels to shift horizontally (increased for dramatic movement)
-        gaze_range_y = 25  # Max pixels to shift vertically (increased for dramatic movement)
+        gaze_range_x = 28  # Max pixels to shift horizontally
+        gaze_range_y = 18  # Max pixels to shift vertically
         gaze_x_offset = int((self.gaze_x - 0.5) * 2 * gaze_range_x)
         gaze_y_offset = int((self.gaze_y - 0.5) * 2 * gaze_range_y)
 

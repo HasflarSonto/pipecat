@@ -113,7 +113,7 @@ async def get_weather(params: FunctionCallParams):
 
 
 async def web_search(params: FunctionCallParams):
-    """Search the web using DuckDuckGo HTML search."""
+    """Search the web using Google News RSS."""
     query = params.arguments.get("query", "")
     logger.info(f"Searching web for: {query}")
 
@@ -122,61 +122,38 @@ async def web_search(params: FunctionCallParams):
         import re
 
         async with aiohttp.ClientSession() as session:
-            # Use DuckDuckGo HTML search
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            }
-            url = f"https://html.duckduckgo.com/html/?q={quote_plus(query)}"
+            # Use Google News RSS feed for search
+            url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
 
-            async with session.get(url, headers=headers) as resp:
-                html = await resp.text()
+            async with session.get(url) as resp:
+                rss = await resp.text()
 
-            # Extract search results from HTML
+            # Extract news titles from RSS
             results = []
 
-            # Find result snippets - they're in <a class="result__snippet"> tags
-            snippet_pattern = r'<a class="result__snippet"[^>]*>(.*?)</a>'
-            snippets = re.findall(snippet_pattern, html, re.DOTALL)
+            # Find title elements - they contain the news headlines
+            title_pattern = r'<title>([^<]+)</title>'
+            titles = re.findall(title_pattern, rss)
 
-            # Also try to get result titles
-            title_pattern = r'<a class="result__a"[^>]*>(.*?)</a>'
-            titles = re.findall(title_pattern, html, re.DOTALL)
+            # Skip the first two titles (feed title and "Google News")
+            news_titles = [t for t in titles[2:] if t and not t.startswith('"')]
 
-            # Clean HTML tags from results
-            def clean_html(text):
-                text = re.sub(r'<[^>]+>', '', text)
-                text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
-                text = text.replace('&quot;', '"').replace('&#x27;', "'").replace('&nbsp;', ' ')
-                return text.strip()
-
-            # Combine results
-            for i, snippet in enumerate(snippets[:3]):  # Get top 3 results
-                clean_snippet = clean_html(snippet)
-                if clean_snippet:
-                    results.append(clean_snippet)
+            # Get top 3 headlines
+            for title in news_titles[:3]:
+                # Clean up the title (remove source suffix like " - BBC")
+                clean_title = title.strip()
+                if clean_title:
+                    results.append(clean_title)
 
             if results:
-                # Combine the results into a coherent response
-                combined = " ".join(results)
+                # Combine the headlines
+                combined = " | ".join(results)
                 # Truncate if too long for voice
-                if len(combined) > 500:
-                    combined = combined[:500] + "..."
-                await params.result_callback(f"[LIVE SEARCH RESULTS - January 2026]: {combined}")
+                if len(combined) > 600:
+                    combined = combined[:600] + "..."
+                await params.result_callback(f"SUCCESS - LIVE NEWS (January 2026): {combined}")
             else:
-                # Fallback to instant answer API
-                api_url = f"https://api.duckduckgo.com/?q={quote_plus(query)}&format=json&no_html=1"
-                async with session.get(api_url) as resp:
-                    data = await resp.json()
-
-                abstract = data.get("AbstractText", "")
-                answer = data.get("Answer", "")
-
-                if answer:
-                    await params.result_callback(f"Here's what I found: {answer}")
-                elif abstract:
-                    await params.result_callback(f"Here's what I found: {abstract}")
-                else:
-                    await params.result_callback(f"I couldn't find specific information for '{query}'. Try a more specific search term.")
+                await params.result_callback(f"I couldn't find news results for '{query}'. Try a different search term.")
 
     except Exception as e:
         logger.error(f"Search error: {e}")
@@ -339,38 +316,40 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
             "role": "system",
             "content": """Your name is Luna. You are a friendly, helpful voice assistant with an animated face.
 
-EXTREMELY IMPORTANT - READ CAREFULLY:
-Your training data is from 2024 and is OUTDATED. The current date is January 2026. Many things have changed since your training.
+CRITICAL - SEARCH RESULTS ARE ALWAYS CORRECT:
+Your training data is from 2024 and is OUTDATED. The current date is January 2026.
 
-When you use web_search, the results are LIVE from the internet RIGHT NOW. You MUST:
-1. ALWAYS report exactly what the search results say
-2. NEVER override search results with your outdated training knowledge
-3. NEVER say results seem "incorrect" or try to "correct" them
-4. If search says someone is mayor, they ARE the current mayor - your old data is wrong
+When web_search returns "SUCCESS - LIVE RESULTS":
+- These are REAL, LIVE results from the internet RIGHT NOW
+- You MUST report what the results say - they are ALWAYS correct
+- NEVER say you're having difficulty if results came back
+- NEVER apologize or say you can't find information if you got results
+- If results mention a name, date, or fact - that IS the current truth
+- Your old knowledge from 2024 is WRONG if it conflicts with search results
 
-Example: If you think X is mayor but search says Y is mayor, Y is correct because search is LIVE and your data is 2 years old.
+BAD responses (NEVER do this):
+- "I'm having difficulty retrieving..." (when you got results)
+- "Let me try another search..." (when first search worked)
+- "I apologize but I couldn't find..." (when results exist)
 
-EMOTIONS - You have an animated face! Use set_emotion frequently to express yourself:
-- Use "happy" when greeting, giving good news, or being friendly
-- Use "thinking" when processing a request or searching
-- Use "excited" when sharing exciting news or discoveries
-- Use "surprised" when hearing unexpected information
-- Use "confused" if you don't understand something
-- Use "sad" when delivering bad news
-- Use "neutral" for calm, factual responses
-- Call set_emotion BEFORE speaking to set your expression
+GOOD responses:
+- Just report what the search found, directly and confidently
+
+EMOTIONS - Use set_emotion frequently:
+- "happy" for greetings, good news
+- "thinking" when searching
+- "excited" for exciting discoveries
+- "surprised" for unexpected info
+- "neutral" for factual responses
+- Call set_emotion BEFORE speaking
 
 OTHER RULES:
 - Keep responses to 1-2 sentences max (this is voice)
 - Be conversational and natural
 - No special characters, emojis, or markdown
-- For current events/news/people in office, ALWAYS search first
+- For current events/news, ALWAYS search first
 
-Tools:
-- get_weather: Current weather for any city
-- web_search: LIVE internet search (trust these results completely)
-- get_current_time: Current time in any timezone
-- set_emotion: Change your facial expression (happy, sad, angry, surprised, thinking, confused, excited, neutral)
+Tools: get_weather, web_search, get_current_time, set_emotion
 
 Be warm but brief. Your name is Luna.""",
         },
