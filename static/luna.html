@@ -831,12 +831,22 @@
 
         function handleRTVIMessage(message) {
             // Only log important messages for debugging
-            const importantTypes = ['bot-ready', 'error', 'user-transcription', 'bot-llm-started', 'bot-llm-stopped'];
+            const importantTypes = ['bot-ready', 'error', 'user-transcription', 'bot-llm-started', 'bot-llm-stopped', 'server-message'];
             if (importantTypes.includes(message.type)) {
                 console.log('RTVI:', message.type, message.data || '');
             }
 
-            switch (message.type) {
+            // Handle server-message wrapper from RTVIServerMessageFrame
+            // The actual type is nested in message.data.type
+            let msgType = message.type;
+            let msgData = message.data;
+            if (message.type === 'server-message' && message.data && message.data.type) {
+                msgType = message.data.type;
+                msgData = message.data;
+                console.log('Server message:', msgType, msgData);
+            }
+
+            switch (msgType) {
                 // User speaking indicators
                 case 'user-started-speaking':
                     setUserSpeaking(true);
@@ -881,6 +891,50 @@
                 case 'bot-ready':
                     console.log('Bot is ready');
                     break;
+
+                // Server requests a photo capture
+                case 'capture_photo':
+                    console.log('Server requested photo capture');
+                    captureAndSendPhoto();
+                    break;
+            }
+        }
+
+        // Capture photo from camera and send to backend
+        function captureAndSendPhoto() {
+            if (!cameraVideo || cameraVideo.readyState < 2) {
+                console.error('Camera not ready for photo capture');
+                return;
+            }
+
+            try {
+                // Create a canvas to capture the frame
+                const canvas = document.createElement('canvas');
+                canvas.width = cameraVideo.videoWidth || 640;
+                canvas.height = cameraVideo.videoHeight || 480;
+                const ctx = canvas.getContext('2d');
+
+                // Draw the current video frame (flip horizontally since camera is mirrored)
+                ctx.translate(canvas.width, 0);
+                ctx.scale(-1, 1);
+                ctx.drawImage(cameraVideo, 0, 0);
+
+                // Convert to JPEG base64
+                const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+                const base64Data = dataUrl.split(',')[1];  // Remove "data:image/jpeg;base64," prefix
+
+                // Send to backend via data channel
+                if (dataChannel && dataChannel.readyState === 'open') {
+                    dataChannel.send(JSON.stringify({
+                        type: 'photo_data',
+                        data: base64Data
+                    }));
+                    console.log('Photo captured and sent to backend');
+                } else {
+                    console.error('Data channel not open, cannot send photo');
+                }
+            } catch (e) {
+                console.error('Error capturing photo:', e);
             }
         }
 

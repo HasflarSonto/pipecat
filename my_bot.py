@@ -181,6 +181,9 @@ async def get_current_time(params: FunctionCallParams):
 # Global references for emotion updates
 current_task = None
 face_renderer = None
+current_transport = None  # For sending messages to frontend
+pending_photo_callback = None  # Callback for when photo is received
+latest_photo_data = None  # Store the latest captured photo
 
 VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
 
@@ -261,6 +264,80 @@ async def clear_drawing(params: FunctionCallParams):
         await params.result_callback("Drawing cleared, face restored")
     else:
         await params.result_callback("Face renderer not ready")
+
+
+async def take_photo(params: FunctionCallParams):
+    """Take a photo from the user's camera and analyze it."""
+    global current_task, latest_photo_data, pending_photo_callback
+    logger.info("Taking photo from camera")
+
+    # Request photo from frontend via RTVI message
+    if current_task:
+        # Send request to frontend to capture photo
+        photo_request_frame = RTVIServerMessageFrame(data={
+            "type": "capture_photo"
+        })
+        await current_task.queue_frames([photo_request_frame])
+
+        # Wait for photo to arrive (up to 3 seconds)
+        photo_event = asyncio.Event()
+        latest_photo_data = None
+
+        def photo_received():
+            photo_event.set()
+
+        pending_photo_callback = photo_received
+
+        try:
+            await asyncio.wait_for(photo_event.wait(), timeout=3.0)
+        except asyncio.TimeoutError:
+            pending_photo_callback = None
+            await params.result_callback("I couldn't capture a photo. Make sure the camera is enabled.")
+            return
+
+        pending_photo_callback = None
+
+        if latest_photo_data:
+            # Photo received - decode base64 and create a frame
+            import base64
+            from io import BytesIO
+            from PIL import Image
+            from pipecat.frames.frames import UserImageRawFrame
+            from pipecat.processors.frame_processor import FrameDirection
+
+            try:
+                # Decode base64 JPEG
+                jpeg_bytes = base64.b64decode(latest_photo_data)
+
+                # Open with PIL to get dimensions and convert to RGB bytes
+                img = Image.open(BytesIO(jpeg_bytes))
+                img_rgb = img.convert('RGB')
+                raw_bytes = img_rgb.tobytes()
+
+                # Create a UserImageRawFrame with append_to_context=True
+                # This will add the image to the LLM context
+                image_frame = UserImageRawFrame(
+                    image=raw_bytes,
+                    size=(img_rgb.width, img_rgb.height),
+                    format="RGB",
+                    user_id="user",
+                    text="Describe what you see in this photo from the user's camera.",
+                    append_to_context=True
+                )
+
+                # Push the frame to be processed by the LLM
+                await params.llm.push_frame(image_frame, FrameDirection.DOWNSTREAM)
+
+                # Return None so the LLM processes the image frame
+                await params.result_callback(None)
+
+            except Exception as e:
+                logger.error(f"Error processing photo: {e}")
+                await params.result_callback(f"Error processing photo: {str(e)}")
+        else:
+            await params.result_callback("Photo capture failed. Please try again.")
+    else:
+        await params.result_callback("Cannot capture photo - not connected.")
 
 
 # ============== TOOL DEFINITIONS ==============
@@ -350,7 +427,14 @@ clear_draw_tool = FunctionSchema(
     required=[],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool])
+photo_tool = FunctionSchema(
+    name="take_photo",
+    description="Take a photo from the user's camera to see what they look like or what's in front of them. Use this when the user asks 'what do you see', 'look at me', 'describe what you see', 'what am I holding', or similar requests to see through their camera.",
+    properties={},
+    required=[],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool])
 
 
 # ============== BOT LOGIC ==============
@@ -404,6 +488,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("set_emotion", set_emotion)
     llm.register_function("draw_pixel_art", draw_pixel_art)
     llm.register_function("clear_drawing", clear_drawing)
+    llm.register_function("take_photo", take_photo)
 
     # System prompt
     messages = [
@@ -453,7 +538,13 @@ DRAWING - Use draw_pixel_art when asked to draw:
 - No need to call clear_drawing, it happens automatically
 - Examples: heart, star, smiley face, sun, house, tree
 
-Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing
+VISION - Use take_photo when asked to see:
+- When user says "what do you see", "look at me", "describe what you see", "what am I holding" etc.
+- This captures a photo from their camera
+- Describe what you see briefly (1-2 sentences)
+- Be friendly and observational
+
+Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, take_photo
 
 Be warm but brief. Your name is Luna.""",
         },
@@ -518,16 +609,27 @@ Be warm but brief. Your name is Luna.""",
 
     @transport.event_handler("on_app_message")
     async def on_app_message(transport, message, sender):
-        """Handle incoming app messages (like gaze data)."""
+        """Handle incoming app messages (like gaze data, photo data)."""
+        global latest_photo_data, pending_photo_callback
         try:
             data = message if isinstance(message, dict) else {}
-            if data.get("type") == "gaze":
+            msg_type = data.get("type")
+
+            if msg_type == "gaze":
                 # Update face renderer gaze
                 x = data.get("x", 0.5)
                 y = data.get("y", 0.5)
                 face_renderer.set_gaze(x, y)
+
+            elif msg_type == "photo_data":
+                # Received photo from frontend
+                logger.info("Received photo data from frontend")
+                latest_photo_data = data.get("data")  # Base64 JPEG
+                if pending_photo_callback:
+                    pending_photo_callback()
+
         except Exception as e:
-            pass  # Ignore errors
+            logger.error(f"Error handling app message: {e}")
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
