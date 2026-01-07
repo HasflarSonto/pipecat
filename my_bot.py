@@ -24,7 +24,8 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import LLMRunFrame, TranscriptionFrame, Frame, StartFrame, EndFrame, SystemFrame
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -56,6 +57,99 @@ load_dotenv(override=True)
 
 # Initialize the request handler
 small_webrtc_handler = SmallWebRTCRequestHandler()
+
+
+# ============== WAKE WORD FILTER ==============
+
+class WakeWordFilter(FrameProcessor):
+    """
+    Filters transcriptions to only pass through when wake word is detected.
+    This saves LLM tokens by not processing speech that isn't directed at Luna.
+
+    Modes:
+    - idle: Waiting for wake word "Luna" - drops all transcriptions without it
+    - active: Passes all transcriptions through (stays active for a timeout period)
+    """
+
+    def __init__(self, wake_word: str = "luna", active_timeout: float = 30.0, face_renderer=None):
+        super().__init__()
+        self.wake_word = wake_word.lower()
+        self.active_timeout = active_timeout  # How long to stay active after wake word
+        self.face_renderer = face_renderer
+        self._is_active = True  # Start active for initial greeting
+        self._last_activity = 0.0
+        self._idle_mode_enabled = False  # Can be toggled via frontend
+
+    def enable_idle_mode(self, enabled: bool = True):
+        """Enable or disable idle mode. When disabled, all speech goes through."""
+        self._idle_mode_enabled = enabled
+        if not enabled:
+            self._is_active = True
+        logger.info(f"Idle mode {'enabled' if enabled else 'disabled'}")
+
+    def _check_wake_word(self, text: str) -> bool:
+        """Check if the wake word is in the text."""
+        return self.wake_word in text.lower()
+
+    def _update_active_state(self):
+        """Check if we should go back to idle based on timeout."""
+        import time
+        if self._is_active and self._idle_mode_enabled:
+            if time.time() - self._last_activity > self.active_timeout:
+                self._is_active = False
+                logger.info("Going back to idle mode (timeout)")
+                # Show neutral/sleeping face when going idle
+                if self.face_renderer:
+                    self.face_renderer.set_emotion("neutral")
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        import time
+
+        # ALWAYS pass system frames through immediately - critical for pipeline startup
+        if isinstance(frame, (StartFrame, EndFrame, SystemFrame)):
+            await self.push_frame(frame, direction)
+            return
+
+        # Only filter TranscriptionFrames - pass everything else through
+        if not isinstance(frame, TranscriptionFrame):
+            await self.push_frame(frame, direction)
+            return
+
+        # If idle mode is disabled, pass everything through
+        if not self._idle_mode_enabled:
+            await self.push_frame(frame, direction)
+            return
+
+        text = frame.text if hasattr(frame, 'text') else ""
+
+        # Check timeout
+        self._update_active_state()
+
+        # If we're active, pass the frame through
+        if self._is_active:
+            self._last_activity = time.time()
+            await self.push_frame(frame, direction)
+            return
+
+        # We're in idle mode - check for wake word
+        if self._check_wake_word(text):
+            logger.info(f"Wake word detected! Activating. Text: '{text}'")
+            self._is_active = True
+            self._last_activity = time.time()
+
+            # Show happy face when waking up
+            if self.face_renderer:
+                self.face_renderer.set_emotion("happy")
+
+            # Pass the frame through
+            await self.push_frame(frame, direction)
+        else:
+            # Drop the frame - we're idle and no wake word
+            logger.debug(f"Idle mode - ignoring: '{text[:50]}...' (no wake word)")
+
+
+# Global wake word filter reference
+wake_word_filter = None
 
 
 # ============== TOOL IMPLEMENTATIONS ==============
@@ -217,7 +311,7 @@ async def draw_pixel_art(params: FunctionCallParams):
     global face_renderer
     pixels = params.arguments.get("pixels", [])
     background = params.arguments.get("background", "#1E1E28")
-    duration = params.arguments.get("duration", 5)  # Default 5 seconds
+    duration = params.arguments.get("duration", 8)  # Default 8 seconds for better visibility
     logger.info(f"Drawing pixel art with {len(pixels)} pixels, bg={background}, duration={duration}s")
 
     if not pixels:
@@ -264,6 +358,68 @@ async def clear_drawing(params: FunctionCallParams):
         await params.result_callback("Drawing cleared, face restored")
     else:
         await params.result_callback("Face renderer not ready")
+
+
+async def display_text(params: FunctionCallParams):
+    """Display text on Luna's screen."""
+    global face_renderer
+    text = params.arguments.get("text", "")
+    font_size = params.arguments.get("font_size", "medium")
+    color = params.arguments.get("color", "#FFFFFF")
+    background = params.arguments.get("background", "#1E1E28")
+    align = params.arguments.get("align", "center")
+    valign = params.arguments.get("valign", "center")
+    duration = params.arguments.get("duration", 8)  # Default 8 seconds for better visibility
+
+    logger.info(f"Displaying text: '{text[:30]}...' size={font_size}")
+
+    if not text:
+        await params.result_callback("No text provided.")
+        return
+
+    if face_renderer:
+        face_renderer.set_text(text, font_size, color, background, align, valign)
+        await params.result_callback(f"Text displayed for {duration} seconds")
+
+        # Auto-clear after duration
+        async def auto_clear():
+            await asyncio.sleep(duration)
+            if face_renderer:
+                face_renderer.clear_text()
+                logger.info("Auto-cleared text after duration")
+
+        asyncio.create_task(auto_clear())
+    else:
+        await params.result_callback("Display not ready")
+
+
+async def clear_text_display(params: FunctionCallParams):
+    """Clear text and return to face display."""
+    global face_renderer
+    logger.info("Clearing text display")
+
+    if face_renderer:
+        face_renderer.clear_text()
+        await params.result_callback("Text cleared, face restored")
+    else:
+        await params.result_callback("Display not ready")
+
+
+async def stay_quiet(params: FunctionCallParams):
+    """Stay quiet - respond with only a facial expression, no speech."""
+    global face_renderer
+    emotion = params.arguments.get("emotion", "neutral").lower()
+    logger.info(f"Staying quiet with emotion: {emotion}")
+
+    if emotion not in VALID_EMOTIONS:
+        emotion = "neutral"
+
+    # Update the face renderer with the emotion
+    if face_renderer:
+        face_renderer.set_emotion(emotion)
+
+    # Return empty result - the LLM should not generate any speech after this
+    await params.result_callback("")
 
 
 async def take_photo(params: FunctionCallParams):
@@ -434,7 +590,66 @@ photo_tool = FunctionSchema(
     required=[],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool])
+display_text_tool = FunctionSchema(
+    name="display_text",
+    description="Display text, numbers, words, or emojis on your screen. Use this when the user asks you to show or write text, display a message, show numbers, show emojis, or present information visually. Text auto-clears after duration.",
+    properties={
+        "text": {
+            "type": "string",
+            "description": "The text to display. Can include letters, numbers, emojis, or any text. Use newlines for multiple lines.",
+        },
+        "font_size": {
+            "type": "string",
+            "description": "Text size: 'small' (24px), 'medium' (36px, default), 'large' (48px), or 'xlarge' (72px)",
+            "enum": ["small", "medium", "large", "xlarge"],
+        },
+        "color": {
+            "type": "string",
+            "description": "Text color in hex (default: #FFFFFF white). Examples: #FF0000 red, #00FF00 green, #FFFF00 yellow",
+        },
+        "background": {
+            "type": "string",
+            "description": "Background color in hex (default: #1E1E28 dark)",
+        },
+        "align": {
+            "type": "string",
+            "description": "Horizontal alignment: 'left', 'center' (default), or 'right'",
+            "enum": ["left", "center", "right"],
+        },
+        "valign": {
+            "type": "string",
+            "description": "Vertical alignment: 'top', 'center' (default), or 'bottom'",
+            "enum": ["top", "center", "bottom"],
+        },
+        "duration": {
+            "type": "integer",
+            "description": "How long to show the text in seconds (default: 5)",
+        },
+    },
+    required=["text"],
+)
+
+clear_text_tool = FunctionSchema(
+    name="clear_text_display",
+    description="Clear text from screen and return to showing your animated face.",
+    properties={},
+    required=[],
+)
+
+stay_quiet_tool = FunctionSchema(
+    name="stay_quiet",
+    description="Stay quiet and respond with only a facial expression - no speech. Use this when the user is talking to themselves, thinking out loud, or when no verbal response is needed. You can still show an emotion to acknowledge them without interrupting.",
+    properties={
+        "emotion": {
+            "type": "string",
+            "description": "The emotion to display while staying quiet. Options: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat",
+            "enum": VALID_EMOTIONS,
+        },
+    },
+    required=["emotion"],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool, display_text_tool, clear_text_tool, stay_quiet_tool])
 
 
 # ============== BOT LOGIC ==============
@@ -489,6 +704,9 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("draw_pixel_art", draw_pixel_art)
     llm.register_function("clear_drawing", clear_drawing)
     llm.register_function("take_photo", take_photo)
+    llm.register_function("display_text", display_text)
+    llm.register_function("clear_text_display", clear_text_display)
+    llm.register_function("stay_quiet", stay_quiet)
 
     # System prompt
     messages = [
@@ -529,22 +747,64 @@ OTHER RULES:
 - No special characters, emojis, or markdown
 - For current events/news, ALWAYS search first
 
-DRAWING - Use draw_pixel_art when asked to draw:
-- Your screen is a 12x16 pixel grid (12 wide, 16 tall)
-- Only specify colored pixels (sparse format), they auto-center
-- Use hex colors: #FF0000 red, #00FF00 green, #0000FF blue, #FFFF00 yellow, #FFFFFF white
-- Keep drawings simple (under 50 pixels) for best results
-- Set duration (default 5 seconds) - drawing auto-clears after this time
-- No need to call clear_drawing, it happens automatically
-- Examples: heart, star, smiley face, sun, house, tree
+DISPLAY MODES - Choose the right one:
 
-VISION - Use take_photo when asked to see:
-- When user says "what do you see", "look at me", "describe what you see", "what am I holding" etc.
-- This captures a photo from their camera
-- Describe what you see briefly (1-2 sentences)
-- Be friendly and observational
+1. FACE (default) - Your animated face with emotions
+   - Use for normal conversation
+   - Use set_emotion to express feelings (happy, sad, thinking, etc.)
+   - Return to face after showing text/drawings
 
-Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, take_photo
+2. TEXT DISPLAY (display_text) - Show text, numbers, emojis
+   USE FOR:
+   - Weather: Show temperature like "72°F" or "22°C" in large text
+   - Time: Show the time like "3:45 PM"
+   - Numbers: Any numeric answer (math, scores, counts)
+   - Short info: Quick facts, names, dates
+   - Emojis: Show emoji reactions
+   SETTINGS:
+   - font_size: small/medium/large/xlarge (use large/xlarge for numbers)
+   - Colors: #FF0000 red, #00FF00 green, #0000FF blue, #FFFF00 yellow
+   - Auto-clears after duration (default 5s)
+   EXAMPLES:
+   - Weather → display "72°F ☀️" in xlarge, yellow text
+   - Time → display "3:45 PM" in large text
+   - Math → display the answer in xlarge
+
+3. PIXEL ART (draw_pixel_art) - 12x16 pixel drawings
+   USE FOR:
+   - When asked to "draw" something artistic
+   - Simple icons: heart, star, sun, moon, house, tree
+   - Creative visual requests
+   - NOT for text/numbers (use display_text instead)
+   SETTINGS:
+   - 12 columns x 16 rows, sparse format (only colored pixels)
+   - Auto-clears after duration
+
+4. VISION (take_photo) - See through camera
+   - "what do you see", "look at me", "describe this"
+
+IMPORTANT: When giving info like weather or time, SHOW it visually with display_text, then speak briefly about it. Make the display match what you're saying.
+
+STAYING QUIET (stay_quiet tool):
+Use stay_quiet when you should NOT speak - just show a facial expression:
+- User is talking to themselves or thinking out loud
+- User is mumbling or speaking to someone else nearby
+- User says something that doesn't need a response (like "hmm", "let me think", "okay so...")
+- User is clearly not addressing you
+- Brief acknowledgments where speaking would be intrusive
+
+Examples where you should stay_quiet:
+- "Hmm, where did I put that..." → stay_quiet with "thinking"
+- "Let me see..." → stay_quiet with "neutral"
+- "Oh wait, never mind" → stay_quiet with "neutral"
+- User sighs or makes non-verbal sounds → stay_quiet with appropriate emotion
+
+When you call stay_quiet:
+1. Call the stay_quiet function with an emotion
+2. DO NOT generate any text/speech after the function call
+3. Your entire response should just be the function call, nothing else
+
+Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, take_photo, display_text, clear_text_display, stay_quiet
 
 Be warm but brief. Your name is Luna.""",
         },
@@ -557,12 +817,22 @@ Be warm but brief. Your name is Luna.""",
     # RTVI processor for UI communication (enables text display in prebuilt UI)
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
 
-    # Build the pipeline with RTVI processor and face renderer
+    # Wake word filter disabled for now - it has lifecycle issues with pipecat
+    # TODO: Re-enable when we figure out proper FrameProcessor start handling
+    # global wake_word_filter
+    # wake_word_filter = WakeWordFilter(
+    #     wake_word="luna",
+    #     active_timeout=30.0,  # Go idle after 30 seconds of no interaction
+    #     face_renderer=face_renderer
+    # )
+
+    # Build the pipeline
     pipeline = Pipeline(
         [
             transport.input(),
             rtvi,
             stt,
+            # wake_word_filter,  # Disabled - causes StartFrame issues
             context_aggregator.user(),
             llm,
             tts,
@@ -627,6 +897,13 @@ Be warm but brief. Your name is Luna.""",
                 latest_photo_data = data.get("data")  # Base64 JPEG
                 if pending_photo_callback:
                     pending_photo_callback()
+
+            elif msg_type == "idle_mode":
+                # Toggle idle mode from frontend
+                enabled = data.get("enabled", False)
+                if wake_word_filter:
+                    wake_word_filter.enable_idle_mode(enabled)
+                    logger.info(f"Idle mode set to: {enabled}")
 
         except Exception as e:
             logger.error(f"Error handling app message: {e}")

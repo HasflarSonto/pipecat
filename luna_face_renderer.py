@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from loguru import logger
 
 from pipecat.frames.frames import CancelFrame, Frame, OutputImageRawFrame, StartFrame, SystemFrame
@@ -36,6 +36,17 @@ class DrawFrame(SystemFrame):
     """Frame to display pixel art drawing on a 12x16 matrix."""
     pixels: List[Dict[str, Any]]  # [{"x": int, "y": int, "color": str}, ...]
     background: str = "#1E1E28"  # Default background color
+
+
+@dataclass
+class TextFrame(SystemFrame):
+    """Frame to display text on the screen."""
+    text: str
+    font_size: str = "medium"  # "small", "medium", "large", "xlarge"
+    color: str = "#FFFFFF"
+    background: str = "#1E1E28"
+    align: str = "center"  # "left", "center", "right"
+    valign: str = "center"  # "top", "center", "bottom"
 
 
 class LunaFaceRenderer(FrameProcessor):
@@ -198,6 +209,173 @@ class LunaFaceRenderer(FrameProcessor):
         self._grid_cols = 12
         self._grid_rows = 16
         self._cell_size = 20
+
+        # Text display state
+        self._text_mode = False
+        self._text_content: Optional[str] = None
+        self._text_font_size = "medium"
+        self._text_color = (255, 255, 255)
+        self._text_bg_color = (30, 30, 40)
+        self._text_align = "center"
+        self._text_valign = "center"
+
+        # Font size mapping (approximate sizes for 240x320 screen)
+        self._font_sizes = {
+            "small": 20,
+            "medium": 32,
+            "large": 44,
+            "xlarge": 64,
+        }
+
+    def set_text(
+        self,
+        text: str,
+        font_size: str = "medium",
+        color: str = "#FFFFFF",
+        background: str = "#1E1E28",
+        align: str = "center",
+        valign: str = "center",
+    ):
+        """
+        Display text on the screen.
+
+        Args:
+            text: The text to display (can include emojis)
+            font_size: "small", "medium", "large", or "xlarge"
+            color: Text color as hex string (e.g., "#FFFFFF")
+            background: Background color as hex string
+            align: Horizontal alignment - "left", "center", or "right"
+            valign: Vertical alignment - "top", "center", or "bottom"
+        """
+        self._text_mode = True
+        self._drawing_mode = False  # Text takes priority over pixel art
+        self._text_content = text
+        self._text_font_size = font_size if font_size in self._font_sizes else "medium"
+        self._text_color = self._hex_to_rgb(color)
+        self._text_bg_color = self._hex_to_rgb(background)
+        self._text_align = align if align in ("left", "center", "right") else "center"
+        self._text_valign = valign if valign in ("top", "center", "bottom") else "center"
+        logger.info(f"Text display: '{text[:30]}...' size={font_size} align={align}/{valign}")
+
+    def clear_text(self):
+        """Clear text display and return to face mode."""
+        self._text_mode = False
+        self._text_content = None
+        logger.info("Text cleared, returning to face mode")
+
+    def _render_text(self) -> Image.Image:
+        """Render text frame with alignment."""
+        img = Image.new("RGB", (self.width, self.height), self._text_bg_color)
+        draw = ImageDraw.Draw(img)
+
+        if not self._text_content:
+            return img
+
+        # Get font size
+        font_size_px = self._font_sizes.get(self._text_font_size, 32)
+
+        # Try to load a rounded/robot-style font that matches Luna's aesthetic
+        font = None
+        try:
+            # Priority: rounded/modern fonts that match the robot aesthetic
+            preferred_fonts = [
+                # macOS rounded fonts
+                "/System/Library/Fonts/Supplemental/Arial Rounded MT Bold.ttf",
+                "/System/Library/Fonts/Avenir Next.ttc",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/SF-Pro-Rounded-Bold.otf",
+                # Linux fonts
+                "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                # Fallback system fonts
+                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            ]
+            for font_path in preferred_fonts:
+                try:
+                    font = ImageFont.truetype(font_path, font_size_px)
+                    break
+                except (OSError, IOError):
+                    continue
+
+            # Fall back to default font
+            if font is None:
+                font = ImageFont.load_default()
+        except Exception:
+            font = ImageFont.load_default()
+
+        # Word wrap the text to fit the screen width
+        text = self._text_content
+        max_width = self.width - 24  # 12px padding on each side
+        lines = self._wrap_text(text, font, max_width, draw)
+
+        # Calculate total text height
+        line_height = font_size_px + 8
+        total_height = len(lines) * line_height
+
+        # Calculate starting Y position based on valign
+        # Shift everything up by 40px to position text higher on screen
+        vertical_offset = -40
+        if self._text_valign == "top":
+            start_y = 30 + vertical_offset
+        elif self._text_valign == "bottom":
+            start_y = self.height - total_height - 30
+        else:  # center
+            start_y = (self.height - total_height) // 2 + vertical_offset
+
+        # Ensure we don't go above the screen
+        start_y = max(15, start_y)
+
+        # Draw each line
+        for i, line in enumerate(lines):
+            # Get line width for alignment
+            bbox = draw.textbbox((0, 0), line, font=font)
+            line_width = bbox[2] - bbox[0]
+
+            # Calculate X position based on align
+            if self._text_align == "left":
+                x = 12
+            elif self._text_align == "right":
+                x = self.width - line_width - 12
+            else:  # center
+                x = (self.width - line_width) // 2
+
+            y = start_y + i * line_height
+
+            # Draw text
+            draw.text((x, y), line, font=font, fill=self._text_color)
+
+        return img
+
+    def _wrap_text(self, text: str, font, max_width: int, draw: ImageDraw.Draw) -> List[str]:
+        """Wrap text to fit within max_width."""
+        lines = []
+        # Split by newlines first
+        paragraphs = text.split('\n')
+
+        for paragraph in paragraphs:
+            if not paragraph:
+                lines.append("")
+                continue
+
+            words = paragraph.split(' ')
+            current_line = ""
+
+            for word in words:
+                test_line = f"{current_line} {word}".strip() if current_line else word
+                bbox = draw.textbbox((0, 0), test_line, font=font)
+                line_width = bbox[2] - bbox[0]
+
+                if line_width <= max_width:
+                    current_line = test_line
+                else:
+                    if current_line:
+                        lines.append(current_line)
+                    current_line = word
+
+            if current_line:
+                lines.append(current_line)
+
+        return lines if lines else [""]
 
     def set_cat_mode(self, enabled: bool):
         """Toggle cat mode."""
@@ -703,11 +881,13 @@ class LunaFaceRenderer(FrameProcessor):
             last_time = current_time
 
             # Update animation (only needed for face mode)
-            if not self._drawing_mode:
+            if not self._drawing_mode and not self._text_mode:
                 self._update_animation(delta_time)
 
-            # Render frame - either pixel art or face
-            if self._drawing_mode:
+            # Render frame - text mode, pixel art, or face (in priority order)
+            if self._text_mode:
+                img = self._render_text()
+            elif self._drawing_mode:
                 img = self._render_pixel_art()
             else:
                 img = self.render_frame()
@@ -752,6 +932,18 @@ class LunaFaceRenderer(FrameProcessor):
         # Handle draw frames
         if isinstance(frame, DrawFrame):
             self.set_pixel_art(frame.pixels, frame.background)
+            return
+
+        # Handle text frames
+        if isinstance(frame, TextFrame):
+            self.set_text(
+                frame.text,
+                frame.font_size,
+                frame.color,
+                frame.background,
+                frame.align,
+                frame.valign,
+            )
             return
 
         # Handle CancelFrame - stop the render loop

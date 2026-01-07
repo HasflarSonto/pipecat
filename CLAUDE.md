@@ -151,8 +151,13 @@ python my_bot.py
 - **Animated Face**: Robot-style eyes with smooth animations, blinking
 - **Emotions**: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
 - **Eye Tracking**: Eyes follow hand (priority) or face via MediaPipe
-- **Tools**: weather, web search (Google News), time, set_emotion, draw_pixel_art
+- **Tools**: weather, web search (Google News), time, set_emotion, draw_pixel_art, display_text, take_photo, stay_quiet
 - **Voice**: Anthropic Claude 3.5 Haiku + OpenAI TTS/STT
+- **Display Modes**:
+  - Face: Normal animated face with emotions
+  - Text: Show text/numbers/emojis (display_text tool)
+  - Pixel Art: 12x16 grid drawings (draw_pixel_art tool)
+  - Vision: Photo capture and analysis (take_photo tool)
 
 ### Performance Tuning
 
@@ -175,3 +180,7 @@ Gaze data ──────────┼────────→│ on_app
 Audio/Video ←───────┼─────────┤ Pipeline:
                               │ Transport→VAD→STT→LLM→TTS→Transport
 ```
+
+### Known Issues / TODOs
+
+- **Wake Word Filter**: The `WakeWordFilter` class exists in `my_bot.py` but is disabled. It has lifecycle issues with pipecat's `FrameProcessor` (StartFrame handling). Re-enable when proper start handling is figured out.

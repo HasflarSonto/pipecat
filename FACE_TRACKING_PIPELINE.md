@@ -291,8 +291,9 @@ def _draw_robot_eye(self, draw: ImageDraw.Draw, x: int, y: int, is_right: bool):
 | File | Purpose |
 |------|---------|
 | `static/luna.html` | Frontend: Camera, MediaPipe, WebRTC client, face detection overlay |
-| `my_bot.py` | Backend: WebRTC server, event handlers, pipeline setup |
-| `luna_face_renderer.py` | Backend: Face rendering, gaze tracking, animation |
+| `static/client.html` | Alternative frontend: Prebuilt UI iframe with face tracking overlay |
+| `my_bot.py` | Backend: WebRTC server, event handlers, pipeline setup, tools |
+| `luna_face_renderer.py` | Backend: Face rendering, gaze tracking, animation, text/pixel art display |
 
 ## Troubleshooting
 
