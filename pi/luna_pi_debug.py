@@ -167,19 +167,20 @@ class TouchPetting:
             return None
 
         import os
-        # Try common event numbers first
-        for event_num in [5, 6, 0, 1, 2, 3, 4, 7, 8, 9]:
+        # Try event6 first (common for ADS7846), then others
+        for event_num in [6, 5, 0, 1, 2, 3, 4, 7, 8, 9]:
             path = f"/dev/input/event{event_num}"
             if os.path.exists(path):
                 try:
                     dev = InputDevice(path)
                     name = dev.name.lower()
+                    log(f"Checking {path}: {dev.name}")
                     if "ads7846" in name or "touchscreen" in name or "touch" in name:
                         log(f"Found touch device: {path} ({dev.name})")
                         return dev
                     dev.close()
-                except Exception:
-                    pass
+                except Exception as e:
+                    log(f"Error checking {path}: {e}")
         return None
 
     def start(self):
@@ -973,14 +974,19 @@ def find_speaker_device():
     for card in [3, 4, 2, 0]:
         device = f"plughw:{card},0"
         try:
-            # Quick test with aplay
+            # Test by listing the device info
             result = subprocess.run(
-                ['aplay', '-D', device, '-d', '0', '/dev/zero'],
-                capture_output=True, timeout=2
+                ['aplay', '-D', device, '-l'],
+                capture_output=True, text=True, timeout=2
             )
-            # If it doesn't error immediately, it's probably valid
-            log(f"Found speaker at {device}")
-            return device
+            # Check if device actually exists by trying to query it
+            result2 = subprocess.run(
+                ['amixer', '-D', device, 'info'],
+                capture_output=True, text=True, timeout=2
+            )
+            if result2.returncode == 0:
+                log(f"Found speaker at {device}")
+                return device
         except Exception:
             continue
 
