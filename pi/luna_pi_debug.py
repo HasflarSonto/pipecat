@@ -939,7 +939,11 @@ class DebugMonitor(FrameProcessor):
             # LLM response text
             if frame.text:
                 debug_state["last_response"] = frame.text[:100]
-                log(f"Response: {frame.text[:50]}...")
+                log(f"TTS TEXT: {frame.text}")
+
+        elif isinstance(frame, OutputAudioRawFrame):
+            # Audio being sent to speaker
+            log(f"AUDIO OUT: {len(frame.audio)} bytes")
 
         await self.push_frame(frame, direction)
 
@@ -968,7 +972,8 @@ async def set_emotion(params):
         log(f"Emotion set to: {emotion}")
     else:
         log("WARNING: face_renderer is None!")
-    return {"status": "success", "emotion": emotion}
+    # Return message that reminds LLM to speak
+    return {"status": "success", "emotion": emotion, "reminder": "Now speak your response out loud to the user."}
 
 async def get_current_time(params):
     """Get the current time."""
@@ -1094,20 +1099,29 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("set_emotion", set_emotion)
     llm.register_function("get_current_time", get_current_time)
 
-    messages = [{"role": "system", "content": """Your name is Luna. You are a friendly voice assistant with an animated face.
+    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant with an animated robot face on a small screen.
 
-IMPORTANT RULES:
-1. ALWAYS speak a response after using set_emotion - never JUST call the tool silently
-2. Keep responses SHORT - 1-2 sentences max (this is voice, not text)
-3. Be warm and conversational
-4. Use set_emotion to change your face before speaking
+CRITICAL - YOU MUST SPEAK:
+Your responses are converted to speech via TTS. If you don't output text, the user hears NOTHING.
 
-Example flow:
-- User says hello
-- You call set_emotion("happy")
-- Then you SPEAK: "Hi there! How can I help you today?"
+EVERY response MUST include spoken text. Tool calls alone produce NO audio output.
 
-Never respond with ONLY a tool call. Always include spoken text."""}]
+FORMAT YOUR RESPONSES LIKE THIS:
+1. Optionally call set_emotion to change your face
+2. THEN write the words you want to say out loud
+
+EXAMPLE - User says "hello":
+[Call set_emotion with "happy"]
+Hi there! Great to hear from you!
+
+EXAMPLE - User asks about time:
+[Call get_current_time]
+It's 3:30 PM on Tuesday!
+
+RULES:
+- Keep responses to 1-2 short sentences (you're speaking, not writing)
+- Be warm and friendly
+- ALWAYS include text to speak - tool calls are silent!"""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
