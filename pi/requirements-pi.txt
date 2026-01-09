@@ -1,0 +1,21 @@
+# Luna Pi Client Requirements
+# For Raspberry Pi headless WebRTC client
+
+# WebRTC
+aiortc>=1.9.0
+
+# HTTP client
+aiohttp>=3.9.0
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Audio
+PyAudio>=0.2.14
+
+# Video processing (for aiortc)
+av>=12.0.0
+
+# Optional: Camera support
+# picamera2>=0.3.12  # Uncomment for Pi Camera
