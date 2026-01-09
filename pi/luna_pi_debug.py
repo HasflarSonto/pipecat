@@ -993,6 +993,54 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     log("API keys found")
 
+    # Test speaker at startup
+    log("Testing speaker...")
+    try:
+        import pyaudio
+        import struct
+        import math
+
+        pa = pyaudio.PyAudio()
+
+        # Find USB speaker
+        speaker_index = None
+        for i in range(pa.get_device_count()):
+            dev = pa.get_device_info_by_index(i)
+            if dev['maxOutputChannels'] > 0:
+                name = dev['name'].lower()
+                if 'usb' in name or 'uac' in name:
+                    speaker_index = i
+                    break
+                elif speaker_index is None:
+                    speaker_index = i
+
+        # Generate a short beep (440Hz for 0.3 seconds)
+        sample_rate = 48000
+        duration = 0.3
+        frequency = 440
+        samples = int(sample_rate * duration)
+        beep_data = b''
+        for i in range(samples):
+            # Stereo: duplicate each sample
+            value = int(16000 * math.sin(2 * math.pi * frequency * i / sample_rate))
+            beep_data += struct.pack('<hh', value, value)  # Left and right channel
+
+        stream = pa.open(
+            format=pyaudio.paInt16,
+            channels=2,
+            rate=sample_rate,
+            output=True,
+            output_device_index=speaker_index,
+        )
+        stream.write(beep_data)
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
+        log("Speaker test: OK (beep played)")
+    except Exception as e:
+        log(f"Speaker test FAILED: {e}")
+        debug_state["errors"].append(f"Speaker test: {e}")
+
     # Components
     audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
     audio_output = PyAudioOutput(sample_rate=48000)
