@@ -145,9 +145,11 @@ class FramebufferOutput(FrameProcessor):
 class PyAudioInput(FrameProcessor):
     """Captures audio from microphone using PyAudio."""
 
-    def __init__(self, sample_rate: int = 16000, channels: int = 1, chunk_ms: int = 20, device_index: int = None):
+    def __init__(self, sample_rate: int = 44100, output_sample_rate: int = 16000,
+                 channels: int = 1, chunk_ms: int = 20, device_index: int = None):
         super().__init__()
-        self.sample_rate = sample_rate
+        self.sample_rate = sample_rate  # Hardware sample rate (e.g., 44100)
+        self.output_sample_rate = output_sample_rate  # Output for STT (e.g., 16000)
         self.channels = channels
         self.chunk_size = int(sample_rate * chunk_ms / 1000)
         self.device_index = device_index  # Allow explicit device selection
@@ -155,6 +157,7 @@ class PyAudioInput(FrameProcessor):
         self.stream = None
         self._running = False
         self._task = None
+        self._need_resample = (sample_rate != output_sample_rate)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -233,14 +236,29 @@ class PyAudioInput(FrameProcessor):
 
         logger.info("Microphone stopped")
 
+    def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
+        """Resample audio data from one sample rate to another."""
+        audio = np.frombuffer(data, dtype=np.int16)
+        # Simple linear interpolation resampling
+        duration = len(audio) / from_rate
+        new_length = int(duration * to_rate)
+        indices = np.linspace(0, len(audio) - 1, new_length)
+        resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.int16)
+        return resampled.tobytes()
+
     async def _capture_loop(self):
         """Continuously capture audio and push frames."""
         while self._running:
             try:
                 data = self.stream.read(self.chunk_size, exception_on_overflow=False)
+
+                # Resample if needed (e.g., 44100 -> 16000 for STT)
+                if self._need_resample:
+                    data = self._resample(data, self.sample_rate, self.output_sample_rate)
+
                 audio_frame = AudioRawFrame(
                     audio=data,
-                    sample_rate=self.sample_rate,
+                    sample_rate=self.output_sample_rate,
                     num_channels=self.channels,
                 )
                 await self.push_frame(audio_frame)
@@ -255,9 +273,9 @@ class PyAudioInput(FrameProcessor):
 class PyAudioOutput(FrameProcessor):
     """Plays audio through speaker using PyAudio."""
 
-    def __init__(self, sample_rate: int = 24000, channels: int = 2, device_index: int = None):
+    def __init__(self, sample_rate: int = 48000, channels: int = 2, device_index: int = None):
         super().__init__()
-        self.sample_rate = sample_rate
+        self.sample_rate = sample_rate  # Hardware sample rate (e.g., 48000)
         self.channels = channels  # USB speaker needs stereo (2 channels)
         self.device_index = device_index
         self.pyaudio = None
@@ -314,11 +332,25 @@ class PyAudioOutput(FrameProcessor):
         except Exception as e:
             logger.error(f"Failed to start speaker: {e}")
 
+    def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
+        """Resample audio data from one sample rate to another."""
+        audio = np.frombuffer(data, dtype=np.int16)
+        duration = len(audio) / from_rate
+        new_length = int(duration * to_rate)
+        indices = np.linspace(0, len(audio) - 1, new_length)
+        resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.int16)
+        return resampled.tobytes()
+
     def _play_audio(self, frame: AudioRawFrame):
         """Play an audio frame."""
         if self.stream:
             try:
                 audio_data = frame.audio
+                input_rate = frame.sample_rate
+
+                # Resample if needed (e.g., TTS outputs 24000, speaker needs 48000)
+                if input_rate != self.sample_rate:
+                    audio_data = self._resample(audio_data, input_rate, self.sample_rate)
 
                 # Convert mono to stereo if needed (USB speaker requires stereo)
                 if frame.num_channels == 1 and self.channels == 2:
@@ -424,8 +456,10 @@ async def run_luna(display_device: str = "/dev/fb0", input_device: int = None):
         return
 
     # Create components
-    audio_input = PyAudioInput(sample_rate=16000)
-    audio_output = PyAudioOutput(sample_rate=24000)
+    # USB mic: captures at 44100Hz, resamples to 16000Hz for STT
+    # USB speaker: receives TTS at 24000Hz, resamples to 48000Hz for hardware
+    audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
+    audio_output = PyAudioOutput(sample_rate=48000)
     framebuffer = FramebufferOutput(device=display_device)
 
     # Face renderer (240x320 portrait, 15 FPS)
