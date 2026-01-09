@@ -209,10 +209,17 @@ class TouchPetting:
     def _touch_loop(self):
         """Background thread for touch event processing."""
         ry = 0
+        event_count = 0
+
+        log("Touch loop started, waiting for events...")
 
         for event in self.device.read_loop():
             if not self.running:
                 break
+
+            event_count += 1
+            if event_count == 1:
+                log("First touch event received!")
 
             # Track Y coordinate
             if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_Y:
@@ -228,6 +235,7 @@ class TouchPetting:
                         if self.last_direction and new_direction != self.last_direction:
                             # Direction changed! Count it
                             self.direction_changes += 1
+                            log(f"Direction change #{self.direction_changes}: {self.last_direction} -> {new_direction}")
 
                             if self.direction_changes >= self.PET_THRESHOLD:
                                 self._trigger_pet()
@@ -243,6 +251,7 @@ class TouchPetting:
 
                 if self.touching and not was_touching:
                     # Touch started
+                    log(f"Touch DOWN at Y={ry}")
                     self.last_y = ry
                     self.direction_changes = 0
                     self.last_direction = None
@@ -251,6 +260,7 @@ class TouchPetting:
 
                 elif not self.touching and was_touching:
                     # Touch ended
+                    log(f"Touch UP at Y={ry}")
                     self.last_y = None
                     self.direction_changes = 0
                     self.last_direction = None
@@ -974,20 +984,21 @@ def find_speaker_device():
     for card in [3, 4, 2, 0]:
         device = f"plughw:{card},0"
         try:
-            # Test by listing the device info
+            # Check if the card exists by looking at /proc/asound
+            card_path = f"/proc/asound/card{card}"
+            if not os.path.exists(card_path):
+                continue
+
+            # Try a quick silent play test
             result = subprocess.run(
-                ['aplay', '-D', device, '-l'],
+                ['aplay', '-D', device, '-d', '0', '-q', '/dev/zero'],
                 capture_output=True, text=True, timeout=2
             )
-            # Check if device actually exists by trying to query it
-            result2 = subprocess.run(
-                ['amixer', '-D', device, 'info'],
-                capture_output=True, text=True, timeout=2
-            )
-            if result2.returncode == 0:
+            if result.returncode == 0 or "audio open error" not in result.stderr:
                 log(f"Found speaker at {device}")
                 return device
-        except Exception:
+        except Exception as e:
+            log(f"Error testing {device}: {e}")
             continue
 
     log("No USB speaker found, defaulting to plughw:0,0")
