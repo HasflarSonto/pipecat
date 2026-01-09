@@ -56,29 +56,52 @@ arecord -l  # List microphones
 aplay -l    # List speakers
 ```
 
-Edit `~/.asoundrc` to match your devices:
+**Note the card numbers** from the output. For example:
+- `card 4: Device [USB PnP Sound Device]` means your mic is on card 4
+- `card 0: bcm2835 [bcm2835]` might be your speaker (Pi's built-in audio)
+
+**First, test with explicit device specification:**
+```bash
+# Test mic with explicit device (replace 4,0 with your card,device from arecord -l)
+# Note: Some USB mics require format specification
+arecord -D hw:4,0 -f S16_LE -r 44100 -c 1 -d 3 test.wav
+
+# Test speaker (replace with your speaker card,device from aplay -l)
+# Common options: card 2 (Headphones), card 3 (USB Audio), card 0/1 (HDMI)
+# If mono file doesn't work, try with plug plugin to convert to stereo:
+aplay -D plughw:3,0 test.wav
+# Or force stereo playback:
+aplay -D hw:3,0 -c 2 test.wav
+```
+
+If that works, configure `~/.asoundrc` to set defaults:
+```bash
+nano ~/.asoundrc
+```
+
+Add this (replace card numbers with your actual devices):
 ```
 pcm.!default {
     type asym
     playback.pcm {
         type plug
-        slave.pcm "hw:0,0"  # Change to your speaker device
+        slave.pcm "hw:3,0"  # Your speaker card,device from aplay -l
+        slave.channels 2    # Force stereo if needed
     }
     capture.pcm {
         type plug
-        slave.pcm "hw:1,0"  # Change to your mic device
+        slave.pcm "hw:4,0"  # Your mic card,device from arecord -l
     }
 }
 ```
 
-Test audio:
-```bash
-# Test speaker
-speaker-test -t wav -c 1
+**Note:** The `plug` plugin automatically handles format/channel conversion. If your speaker needs stereo, the `slave.channels 2` line will convert mono to stereo.
 
-# Test microphone (records 5 seconds, plays back)
-arecord -d 5 test.wav && aplay test.wav
-```
+**Troubleshooting:**
+- If `arecord -d 3 test.wav` fails with "No such file or directory", use explicit device: `arecord -D hw:4,0 -f S16_LE -d 3 test.wav`
+- If you get "Sample format non available", specify format: `arecord -D hw:4,0 -f S16_LE -r 44100 -c 1 -d 3 test.wav`
+- If you get permission errors, add your user to the audio group: `sudo usermod -a -G audio $USER` (then log out and back in)
+- Test speaker: `speaker-test -t wav -c 1 -D hw:2,0` (use your speaker card number - card 2 is usually headphones)
 
 ### 5. Run Luna Client
 
@@ -174,15 +197,18 @@ journalctl -u luna -f
 ### No audio input
 
 1. Check USB mic is detected: `lsusb`
-2. Check ALSA devices: `arecord -l`
-3. Test recording: `arecord -d 3 test.wav`
-4. Adjust ~/.asoundrc device numbers
+2. Check ALSA devices: `arecord -l` (note the card number, e.g., `card 4`)
+3. Test with explicit device and format: `arecord -D hw:4,0 -f S16_LE -r 44100 -c 1 -d 3 test.wav` (replace 4,0 with your card,device)
+4. If explicit device works but default doesn't, configure `~/.asoundrc` (see Step 4 above)
+5. Check permissions: `sudo usermod -a -G audio $USER` (then log out/in)
 
 ### No audio output
 
 1. Check speaker device: `aplay -l`
-2. Test: `speaker-test -t wav`
-3. Check volume: `alsamixer`
+2. Test with plug plugin (handles format conversion): `aplay -D plughw:3,0 test.wav`
+3. If "Channels count non available" error, try stereo: `aplay -D hw:3,0 -c 2 test.wav`
+4. Test with speaker-test: `speaker-test -t wav -D hw:3,0 -c 2`
+5. Check volume: `alsamixer -c 3` (use your speaker card number)
 
 ### Connection issues
 

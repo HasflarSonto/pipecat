@@ -144,11 +144,12 @@ class FramebufferOutput(FrameProcessor):
 class PyAudioInput(FrameProcessor):
     """Captures audio from microphone using PyAudio."""
 
-    def __init__(self, sample_rate: int = 16000, channels: int = 1, chunk_ms: int = 20):
+    def __init__(self, sample_rate: int = 16000, channels: int = 1, chunk_ms: int = 20, device_index: int = None):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
         self.chunk_size = int(sample_rate * chunk_ms / 1000)
+        self.device_index = device_index  # Allow explicit device selection
         self.pyaudio = None
         self.stream = None
         self._running = False
@@ -174,14 +175,28 @@ class PyAudioInput(FrameProcessor):
             import pyaudio
             self.pyaudio = pyaudio.PyAudio()
 
-            # Find USB microphone
-            device_index = None
+            # List all audio devices
+            logger.info("Available audio devices:")
             for i in range(self.pyaudio.get_device_count()):
                 dev = self.pyaudio.get_device_info_by_index(i)
-                if dev['maxInputChannels'] > 0:
-                    logger.info(f"Found input device [{i}]: {dev['name']}")
-                    if 'usb' in dev['name'].lower() or device_index is None:
-                        device_index = i
+                in_ch = dev['maxInputChannels']
+                out_ch = dev['maxOutputChannels']
+                logger.info(f"  [{i}] {dev['name']} (in:{in_ch}, out:{out_ch})")
+
+            # Use explicit device if specified, otherwise find USB mic
+            device_index = self.device_index
+            if device_index is None:
+                for i in range(self.pyaudio.get_device_count()):
+                    dev = self.pyaudio.get_device_info_by_index(i)
+                    if dev['maxInputChannels'] > 0:
+                        # Prefer USB/PnP devices
+                        if 'usb' in dev['name'].lower() or 'pnp' in dev['name'].lower():
+                            device_index = i
+                            break
+                        elif device_index is None:
+                            device_index = i
+
+            logger.info(f"Using input device [{device_index}]")
 
             self.stream = self.pyaudio.open(
                 format=pyaudio.paInt16,
@@ -191,7 +206,7 @@ class PyAudioInput(FrameProcessor):
                 input_device_index=device_index,
                 frames_per_buffer=self.chunk_size,
             )
-            logger.info(f"Microphone started (device {device_index})")
+            logger.info(f"Microphone started (device {device_index}, {self.sample_rate}Hz, {self.channels}ch)")
 
             self._running = True
             self._task = asyncio.create_task(self._capture_loop())
@@ -239,10 +254,11 @@ class PyAudioInput(FrameProcessor):
 class PyAudioOutput(FrameProcessor):
     """Plays audio through speaker using PyAudio."""
 
-    def __init__(self, sample_rate: int = 24000, channels: int = 1):
+    def __init__(self, sample_rate: int = 24000, channels: int = 2, device_index: int = None):
         super().__init__()
         self.sample_rate = sample_rate
-        self.channels = channels
+        self.channels = channels  # USB speaker needs stereo (2 channels)
+        self.device_index = device_index
         self.pyaudio = None
         self.stream = None
 
@@ -270,13 +286,29 @@ class PyAudioOutput(FrameProcessor):
             import pyaudio
             self.pyaudio = pyaudio.PyAudio()
 
+            # Find output device if not specified
+            device_index = self.device_index
+            if device_index is None:
+                for i in range(self.pyaudio.get_device_count()):
+                    dev = self.pyaudio.get_device_info_by_index(i)
+                    if dev['maxOutputChannels'] > 0:
+                        # Prefer USB/UAC devices
+                        if 'usb' in dev['name'].lower() or 'uac' in dev['name'].lower():
+                            device_index = i
+                            break
+                        elif device_index is None:
+                            device_index = i
+
+            logger.info(f"Using output device [{device_index}]")
+
             self.stream = self.pyaudio.open(
                 format=pyaudio.paInt16,
                 channels=self.channels,
                 rate=self.sample_rate,
                 output=True,
+                output_device_index=device_index,
             )
-            logger.info("Speaker started")
+            logger.info(f"Speaker started (device {device_index}, {self.sample_rate}Hz, {self.channels}ch)")
 
         except Exception as e:
             logger.error(f"Failed to start speaker: {e}")
@@ -285,7 +317,16 @@ class PyAudioOutput(FrameProcessor):
         """Play an audio frame."""
         if self.stream:
             try:
-                self.stream.write(frame.audio)
+                audio_data = frame.audio
+
+                # Convert mono to stereo if needed (USB speaker requires stereo)
+                if frame.num_channels == 1 and self.channels == 2:
+                    # Duplicate mono channel to both L and R
+                    mono = np.frombuffer(audio_data, dtype=np.int16)
+                    stereo = np.column_stack((mono, mono)).flatten()
+                    audio_data = stereo.tobytes()
+
+                self.stream.write(audio_data)
             except Exception as e:
                 logger.warning(f"Audio playback error: {e}")
 
