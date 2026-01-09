@@ -538,9 +538,30 @@ Keep responses SHORT - 1-2 sentences max. Use set_emotion to change your face ex
     await runner.run(task)
 
 
-def run_web_server():
-    """Run web server in background thread."""
-    uvicorn.run(app, host="0.0.0.0", port=7860, log_level="warning")
+async def run_web_server():
+    """Run web server as async task."""
+    config = uvicorn.Config(app, host="0.0.0.0", port=7860, log_level="warning")
+    server = uvicorn.Server(config)
+    await server.serve()
+
+
+async def main_async(display_device: str):
+    """Run both web server and Luna concurrently."""
+    # Start web server task
+    web_task = asyncio.create_task(run_web_server())
+    log("Web server starting on http://0.0.0.0:7860")
+
+    # Give web server a moment to start
+    await asyncio.sleep(1)
+
+    # Run Luna
+    try:
+        await run_luna(display_device=display_device)
+    except Exception as e:
+        log(f"Luna error: {e}")
+        debug_state["errors"].append(str(e))
+    finally:
+        web_task.cancel()
 
 
 def main():
@@ -549,14 +570,15 @@ def main():
     parser.add_argument("--no-web", action="store_true", help="Disable web interface")
     args = parser.parse_args()
 
-    # Start web server in background
-    if not args.no_web:
-        web_thread = threading.Thread(target=run_web_server, daemon=True)
-        web_thread.start()
-        print(f"\n🌐 Debug interface: http://localhost:7860\n")
+    import socket
+    ip = socket.gethostbyname(socket.gethostname())
+    print(f"\n🌐 Debug interface: http://{ip}:7860\n")
 
     try:
-        asyncio.run(run_luna(display_device=args.display))
+        if args.no_web:
+            asyncio.run(run_luna(display_device=args.display))
+        else:
+            asyncio.run(main_async(display_device=args.display))
     except KeyboardInterrupt:
         log("Shutting down...")
 
