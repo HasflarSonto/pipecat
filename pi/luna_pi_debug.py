@@ -15,6 +15,7 @@ import asyncio
 import os
 import sys
 import time
+import queue
 from pathlib import Path
 from collections import deque
 from datetime import datetime
@@ -782,7 +783,6 @@ class PyAudioOutput(FrameProcessor):
             await self.push_frame(frame, direction)
 
     def _start_playback(self):
-        import queue
         self._audio_queue = queue.Queue()
         self._running = True
         self._play_thread = threading.Thread(target=self._playback_thread, daemon=True)
