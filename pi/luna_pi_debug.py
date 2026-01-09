@@ -25,9 +25,10 @@ import numpy as np
 from dotenv import load_dotenv
 from loguru import logger
 from PIL import Image
+import io
 import uvicorn
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 import threading
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -65,6 +66,7 @@ debug_state = {
     "errors": deque(maxlen=10),
     "logs": deque(maxlen=50),
     "started_at": None,
+    "last_frame_jpeg": None,  # Latest face frame as JPEG bytes
 }
 
 
@@ -78,6 +80,29 @@ def log(msg):
 # ============== WEB SERVER ==============
 
 app = FastAPI()
+
+
+async def generate_mjpeg():
+    """Generate MJPEG stream from Luna's face frames."""
+    while True:
+        if debug_state["last_frame_jpeg"]:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" +
+                debug_state["last_frame_jpeg"] +
+                b"\r\n"
+            )
+        await asyncio.sleep(0.067)  # ~15 FPS
+
+
+@app.get("/video")
+async def video_feed():
+    """MJPEG video stream endpoint."""
+    return StreamingResponse(
+        generate_mjpeg(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
@@ -93,7 +118,6 @@ async def index():
     <html>
     <head>
         <title>Luna Pi Debug</title>
-        <meta http-equiv="refresh" content="2">
         <style>
             body {{ font-family: monospace; background: #1a1a2e; color: #eee; padding: 20px; }}
             .status {{ font-size: 24px; margin-bottom: 20px; }}
@@ -102,47 +126,94 @@ async def index():
             .box {{ background: #16213e; padding: 15px; margin: 10px 0; border-radius: 8px; }}
             .label {{ color: #888; }}
             .value {{ color: #4ade80; font-size: 18px; }}
-            .logs {{ font-size: 12px; max-height: 400px; overflow-y: auto; }}
-            h2 {{ color: #818cf8; }}
+            .logs {{ font-size: 12px; max-height: 300px; overflow-y: auto; }}
+            h2 {{ color: #818cf8; margin-top: 0; }}
             .meter {{ width: 200px; height: 20px; background: #333; border-radius: 4px; overflow: hidden; }}
             .meter-fill {{ height: 100%; background: linear-gradient(90deg, #4ade80, #fbbf24); transition: width 0.2s; }}
+            .grid {{ display: grid; grid-template-columns: 280px 1fr; gap: 20px; }}
+            .video-container {{ text-align: center; }}
+            .video-container img {{ border-radius: 8px; border: 2px solid #818cf8; }}
+            .right-panel {{ display: flex; flex-direction: column; gap: 10px; }}
         </style>
+        <script>
+            // Auto-refresh status every 2 seconds (but not the whole page - keeps video smooth)
+            setInterval(async () => {{
+                const resp = await fetch('/status');
+                const data = await resp.json();
+                document.getElementById('status-text').textContent = data.status + (data.uptime ? ` (uptime: ${{data.uptime}}s)` : '');
+                document.getElementById('status-text').className = 'status ' + (data.status === 'running' ? 'ok' : 'error');
+                document.getElementById('mic-meter').style.width = Math.min(data.mic_level * 100, 100) + '%';
+                document.getElementById('vad-status').innerHTML = data.vad_speaking ? '🎤 SPEAKING' : '⏸️ Waiting...';
+                document.getElementById('vad-status').style.color = data.vad_speaking ? '#4ade80' : '#888';
+                document.getElementById('speaker-status').innerHTML = data.speaker_active ? '🔊 Playing' : '🔇 Silent';
+                document.getElementById('last-heard').textContent = data.last_transcription || '(nothing yet)';
+                document.getElementById('last-response').textContent = data.last_response || '(nothing yet)';
+                document.getElementById('frame-count').textContent = data.frame_count;
+                document.getElementById('logs').innerHTML = data.logs.join('<br>');
+            }}, 1000);
+        </script>
     </head>
     <body>
         <h1>🤖 Luna Pi Debug</h1>
 
-        <div class="status {'ok' if debug_state['status'] == 'running' else 'error'}">
-            Status: {debug_state['status']} {f'(uptime: {uptime})' if uptime else ''}
+        <div id="status-text" class="status {'ok' if debug_state['status'] == 'running' else 'error'}">
+            {debug_state['status']} {f"(uptime: {uptime})" if uptime else ''}
         </div>
 
-        <div class="box">
-            <h2>Audio</h2>
-            <p><span class="label">Mic Level:</span></p>
-            <div class="meter"><div class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
-            <p><span class="label">VAD:</span> <span class="value" style="color: {'#4ade80' if debug_state['vad_speaking'] else '#888'}">{'🎤 SPEAKING' if debug_state['vad_speaking'] else '⏸️ Waiting...'}</span></p>
-            <p><span class="label">Speaker:</span> <span class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
-        </div>
+        <div class="grid">
+            <div class="video-container">
+                <h2>Luna's Face</h2>
+                <img src="/video" width="240" height="320" alt="Luna Face">
+            </div>
 
-        <div class="box">
-            <h2>Conversation</h2>
-            <p><span class="label">Last heard:</span> <span class="value">{debug_state['last_transcription'] or '(nothing yet)'}</span></p>
-            <p><span class="label">Last response:</span> <span class="value">{debug_state['last_response'] or '(nothing yet)'}</span></p>
-        </div>
+            <div class="right-panel">
+                <div class="box">
+                    <h2>Audio</h2>
+                    <p><span class="label">Mic Level:</span></p>
+                    <div class="meter"><div id="mic-meter" class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
+                    <p><span class="label">VAD:</span> <span id="vad-status" class="value" style="color: {'#4ade80' if debug_state['vad_speaking'] else '#888'}">{'🎤 SPEAKING' if debug_state['vad_speaking'] else '⏸️ Waiting...'}</span></p>
+                    <p><span class="label">Speaker:</span> <span id="speaker-status" class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
+                </div>
 
-        <div class="box">
-            <h2>Pipeline</h2>
-            <p><span class="label">Video frames rendered:</span> <span class="value">{debug_state['frame_count']}</span></p>
+                <div class="box">
+                    <h2>Conversation</h2>
+                    <p><span class="label">Last heard:</span> <span id="last-heard" class="value">{debug_state['last_transcription'] or '(nothing yet)'}</span></p>
+                    <p><span class="label">Last response:</span> <span id="last-response" class="value">{debug_state['last_response'] or '(nothing yet)'}</span></p>
+                </div>
+
+                <div class="box">
+                    <h2>Pipeline</h2>
+                    <p><span class="label">Video frames:</span> <span id="frame-count" class="value">{debug_state['frame_count']}</span></p>
+                </div>
+            </div>
         </div>
 
         {f'<div class="box"><h2>Errors</h2>{errors_html}</div>' if debug_state['errors'] else ''}
 
         <div class="box">
             <h2>Logs</h2>
-            <div class="logs">{logs_html}</div>
+            <div id="logs" class="logs">{logs_html}</div>
         </div>
     </body>
     </html>
     """
+
+
+@app.get("/status")
+async def get_status():
+    """JSON status endpoint for AJAX updates."""
+    uptime = int(time.time() - debug_state['started_at']) if debug_state['started_at'] else 0
+    return {
+        "status": debug_state["status"],
+        "uptime": uptime,
+        "mic_level": debug_state["mic_level"],
+        "vad_speaking": debug_state["vad_speaking"],
+        "speaker_active": debug_state["speaker_active"],
+        "last_transcription": debug_state["last_transcription"],
+        "last_response": debug_state["last_response"],
+        "frame_count": debug_state["frame_count"],
+        "logs": list(debug_state["logs"])[-30:],
+    }
 
 
 # ============== FRAMEBUFFER DISPLAY ==============
@@ -181,20 +252,27 @@ class FramebufferOutput(FrameProcessor):
             self.fb = None
 
     def _render_frame(self, frame: OutputImageRawFrame):
-        if self.fb is None:
-            return
         try:
             img = Image.frombytes('RGB', (frame.size[0], frame.size[1]), frame.image)
             if img.size != (self.width, self.height):
                 img = img.resize((self.width, self.height), Image.Resampling.NEAREST)
-            pixels = np.array(img)
-            r = (pixels[:, :, 0] >> 3).astype(np.uint16)
-            g = (pixels[:, :, 1] >> 2).astype(np.uint16)
-            b = (pixels[:, :, 2] >> 3).astype(np.uint16)
-            rgb565 = (r << 11) | (g << 5) | b
-            self.fb.seek(0)
-            self.fb.write(rgb565.tobytes())
-            self.fb.flush()
+
+            # Save JPEG for web streaming
+            jpeg_buffer = io.BytesIO()
+            img.save(jpeg_buffer, format='JPEG', quality=80)
+            debug_state["last_frame_jpeg"] = jpeg_buffer.getvalue()
+
+            # Render to framebuffer if available
+            if self.fb is not None:
+                pixels = np.array(img)
+                r = (pixels[:, :, 0] >> 3).astype(np.uint16)
+                g = (pixels[:, :, 1] >> 2).astype(np.uint16)
+                b = (pixels[:, :, 2] >> 3).astype(np.uint16)
+                rgb565 = (r << 11) | (g << 5) | b
+                self.fb.seek(0)
+                self.fb.write(rgb565.tobytes())
+                self.fb.flush()
+
             debug_state["frame_count"] += 1
         except Exception as e:
             debug_state["errors"].append(f"Render: {e}")
