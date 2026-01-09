@@ -1,0 +1,565 @@
+#!/usr/bin/env python3
+"""
+Luna Pi Debug - Web-based debug interface for Luna on Raspberry Pi
+
+Runs Luna with a web interface at http://PI_IP:7860 showing:
+- Real-time status
+- Audio levels
+- Transcriptions
+- Pipeline state
+"""
+
+import argparse
+import asyncio
+import os
+import sys
+import time
+from pathlib import Path
+from collections import deque
+from datetime import datetime
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+import numpy as np
+from dotenv import load_dotenv
+from loguru import logger
+from PIL import Image
+import uvicorn
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+import threading
+
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import (
+    Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame,
+    OutputAudioRawFrame, StartFrame, EndFrame, TranscriptionFrame,
+    TextFrame
+)
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.services.anthropic.llm import AnthropicLLMService
+from pipecat.services.openai.stt import OpenAISTTService
+from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+
+from luna_face_renderer import LunaFaceRenderer
+
+load_dotenv(override=True)
+
+# Global state for web interface
+debug_state = {
+    "status": "initializing",
+    "mic_level": 0,
+    "speaker_active": False,
+    "last_transcription": "",
+    "last_response": "",
+    "frame_count": 0,
+    "errors": deque(maxlen=10),
+    "logs": deque(maxlen=50),
+    "started_at": None,
+}
+
+
+def log(msg):
+    """Log message to both console and debug state."""
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    debug_state["logs"].append(f"[{timestamp}] {msg}")
+    logger.info(msg)
+
+
+# ============== WEB SERVER ==============
+
+app = FastAPI()
+
+@app.get("/", response_class=HTMLResponse)
+async def index():
+    logs_html = "<br>".join(list(debug_state["logs"])[-30:])
+    errors_html = "<br>".join([f"<span style='color:red'>{e}</span>" for e in debug_state["errors"]])
+
+    uptime = ""
+    if debug_state["started_at"]:
+        uptime = f"{int(time.time() - debug_state['started_at'])}s"
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Luna Pi Debug</title>
+        <meta http-equiv="refresh" content="2">
+        <style>
+            body {{ font-family: monospace; background: #1a1a2e; color: #eee; padding: 20px; }}
+            .status {{ font-size: 24px; margin-bottom: 20px; }}
+            .status.ok {{ color: #4ade80; }}
+            .status.error {{ color: #f87171; }}
+            .box {{ background: #16213e; padding: 15px; margin: 10px 0; border-radius: 8px; }}
+            .label {{ color: #888; }}
+            .value {{ color: #4ade80; font-size: 18px; }}
+            .logs {{ font-size: 12px; max-height: 400px; overflow-y: auto; }}
+            h2 {{ color: #818cf8; }}
+            .meter {{ width: 200px; height: 20px; background: #333; border-radius: 4px; overflow: hidden; }}
+            .meter-fill {{ height: 100%; background: linear-gradient(90deg, #4ade80, #fbbf24); transition: width 0.2s; }}
+        </style>
+    </head>
+    <body>
+        <h1>🤖 Luna Pi Debug</h1>
+
+        <div class="status {'ok' if debug_state['status'] == 'running' else 'error'}">
+            Status: {debug_state['status']} {f'(uptime: {uptime})' if uptime else ''}
+        </div>
+
+        <div class="box">
+            <h2>Audio</h2>
+            <p><span class="label">Mic Level:</span></p>
+            <div class="meter"><div class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
+            <p><span class="label">Speaker:</span> <span class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
+        </div>
+
+        <div class="box">
+            <h2>Conversation</h2>
+            <p><span class="label">Last heard:</span> <span class="value">{debug_state['last_transcription'] or '(nothing yet)'}</span></p>
+            <p><span class="label">Last response:</span> <span class="value">{debug_state['last_response'] or '(nothing yet)'}</span></p>
+        </div>
+
+        <div class="box">
+            <h2>Pipeline</h2>
+            <p><span class="label">Video frames rendered:</span> <span class="value">{debug_state['frame_count']}</span></p>
+        </div>
+
+        {f'<div class="box"><h2>Errors</h2>{errors_html}</div>' if debug_state['errors'] else ''}
+
+        <div class="box">
+            <h2>Logs</h2>
+            <div class="logs">{logs_html}</div>
+        </div>
+    </body>
+    </html>
+    """
+
+
+# ============== FRAMEBUFFER DISPLAY ==============
+
+class FramebufferOutput(FrameProcessor):
+    """Renders OutputImageRawFrame to Linux framebuffer."""
+
+    def __init__(self, device: str = "/dev/fb0", width: int = 240, height: int = 320):
+        super().__init__()
+        self.device = device
+        self.width = width
+        self.height = height
+        self.fb = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            self._open_framebuffer()
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, OutputImageRawFrame):
+            self._render_frame(frame)
+        elif isinstance(frame, EndFrame):
+            self._close_framebuffer()
+            await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
+
+    def _open_framebuffer(self):
+        try:
+            self.fb = open(self.device, 'wb')
+            log(f"Framebuffer opened: {self.device}")
+        except Exception as e:
+            log(f"Framebuffer error: {e}")
+            debug_state["errors"].append(f"Framebuffer: {e}")
+            self.fb = None
+
+    def _render_frame(self, frame: OutputImageRawFrame):
+        if self.fb is None:
+            return
+        try:
+            img = Image.frombytes('RGB', (frame.size[0], frame.size[1]), frame.image)
+            if img.size != (self.width, self.height):
+                img = img.resize((self.width, self.height), Image.Resampling.NEAREST)
+            pixels = np.array(img)
+            r = (pixels[:, :, 0] >> 3).astype(np.uint16)
+            g = (pixels[:, :, 1] >> 2).astype(np.uint16)
+            b = (pixels[:, :, 2] >> 3).astype(np.uint16)
+            rgb565 = (r << 11) | (g << 5) | b
+            self.fb.seek(0)
+            self.fb.write(rgb565.tobytes())
+            self.fb.flush()
+            debug_state["frame_count"] += 1
+        except Exception as e:
+            debug_state["errors"].append(f"Render: {e}")
+
+    def _close_framebuffer(self):
+        if self.fb:
+            self.fb.close()
+            log("Framebuffer closed")
+
+
+# ============== AUDIO I/O ==============
+
+class PyAudioInput(FrameProcessor):
+    """Captures audio from microphone."""
+
+    def __init__(self, sample_rate: int = 44100, output_sample_rate: int = 16000, channels: int = 1, device_index: int = None):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.output_sample_rate = output_sample_rate
+        self.channels = channels
+        self.chunk_size = int(sample_rate * 20 / 1000)  # 20ms chunks
+        self.device_index = device_index
+        self.pyaudio = None
+        self.stream = None
+        self._running = False
+        self._task = None
+        self._need_resample = (sample_rate != output_sample_rate)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            await self._start_capture()
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, EndFrame):
+            await self._stop_capture()
+            await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
+
+    async def _start_capture(self):
+        try:
+            import pyaudio
+            self.pyaudio = pyaudio.PyAudio()
+
+            # Find USB mic
+            device_index = self.device_index
+            if device_index is None:
+                for i in range(self.pyaudio.get_device_count()):
+                    dev = self.pyaudio.get_device_info_by_index(i)
+                    if dev['maxInputChannels'] > 0:
+                        name = dev['name'].lower()
+                        log(f"Input device [{i}]: {dev['name']}")
+                        if 'usb' in name or 'pnp' in name:
+                            device_index = i
+                            break
+                        elif device_index is None:
+                            device_index = i
+
+            self.stream = self.pyaudio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                input=True,
+                input_device_index=device_index,
+                frames_per_buffer=self.chunk_size,
+            )
+            log(f"Mic started: device {device_index}, {self.sample_rate}Hz")
+            debug_state["status"] = "running"
+
+            self._running = True
+            self._task = asyncio.create_task(self._capture_loop())
+
+        except Exception as e:
+            log(f"Mic error: {e}")
+            debug_state["errors"].append(f"Mic: {e}")
+            debug_state["status"] = "mic_error"
+
+    async def _stop_capture(self):
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        if self.pyaudio:
+            self.pyaudio.terminate()
+        log("Mic stopped")
+
+    def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
+        audio = np.frombuffer(data, dtype=np.int16)
+        duration = len(audio) / from_rate
+        new_length = int(duration * to_rate)
+        indices = np.linspace(0, len(audio) - 1, new_length)
+        resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.int16)
+        return resampled.tobytes()
+
+    async def _capture_loop(self):
+        while self._running:
+            try:
+                data = self.stream.read(self.chunk_size, exception_on_overflow=False)
+
+                # Update mic level for debug display
+                audio = np.frombuffer(data, dtype=np.int16)
+                debug_state["mic_level"] = np.abs(audio).mean() / 32768
+
+                if self._need_resample:
+                    data = self._resample(data, self.sample_rate, self.output_sample_rate)
+
+                audio_frame = InputAudioRawFrame(
+                    audio=data,
+                    sample_rate=self.output_sample_rate,
+                    num_channels=self.channels,
+                )
+                await self.push_frame(audio_frame)
+                await asyncio.sleep(0.001)
+
+            except Exception as e:
+                if self._running:
+                    debug_state["errors"].append(f"Capture: {e}")
+                await asyncio.sleep(0.1)
+
+
+class PyAudioOutput(FrameProcessor):
+    """Plays audio through speaker."""
+
+    def __init__(self, sample_rate: int = 48000, channels: int = 2, device_index: int = None):
+        super().__init__()
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.device_index = device_index
+        self.pyaudio = None
+        self.stream = None
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, StartFrame):
+            self._start_playback()
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, OutputAudioRawFrame):
+            self._play_audio(frame)
+            await self.push_frame(frame, direction)
+        elif isinstance(frame, EndFrame):
+            self._stop_playback()
+            await self.push_frame(frame, direction)
+        else:
+            await self.push_frame(frame, direction)
+
+    def _start_playback(self):
+        try:
+            import pyaudio
+            self.pyaudio = pyaudio.PyAudio()
+
+            device_index = self.device_index
+            if device_index is None:
+                for i in range(self.pyaudio.get_device_count()):
+                    dev = self.pyaudio.get_device_info_by_index(i)
+                    if dev['maxOutputChannels'] > 0:
+                        name = dev['name'].lower()
+                        log(f"Output device [{i}]: {dev['name']}")
+                        if 'usb' in name or 'uac' in name:
+                            device_index = i
+                            break
+                        elif device_index is None:
+                            device_index = i
+
+            self.stream = self.pyaudio.open(
+                format=pyaudio.paInt16,
+                channels=self.channels,
+                rate=self.sample_rate,
+                output=True,
+                output_device_index=device_index,
+            )
+            log(f"Speaker started: device {device_index}, {self.sample_rate}Hz, {self.channels}ch")
+
+        except Exception as e:
+            log(f"Speaker error: {e}")
+            debug_state["errors"].append(f"Speaker: {e}")
+
+    def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
+        audio = np.frombuffer(data, dtype=np.int16)
+        duration = len(audio) / from_rate
+        new_length = int(duration * to_rate)
+        indices = np.linspace(0, len(audio) - 1, new_length)
+        resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.int16)
+        return resampled.tobytes()
+
+    def _play_audio(self, frame: OutputAudioRawFrame):
+        if self.stream:
+            try:
+                debug_state["speaker_active"] = True
+                audio_data = frame.audio
+                input_rate = frame.sample_rate
+
+                if input_rate != self.sample_rate:
+                    audio_data = self._resample(audio_data, input_rate, self.sample_rate)
+
+                if frame.num_channels == 1 and self.channels == 2:
+                    mono = np.frombuffer(audio_data, dtype=np.int16)
+                    stereo = np.column_stack((mono, mono)).flatten()
+                    audio_data = stereo.tobytes()
+
+                self.stream.write(audio_data)
+            except Exception as e:
+                debug_state["errors"].append(f"Playback: {e}")
+            finally:
+                debug_state["speaker_active"] = False
+
+    def _stop_playback(self):
+        if self.stream:
+            self.stream.stop_stream()
+            self.stream.close()
+        if self.pyaudio:
+            self.pyaudio.terminate()
+        log("Speaker stopped")
+
+
+# ============== DEBUG MONITOR ==============
+
+class DebugMonitor(FrameProcessor):
+    """Monitors frames for debug display."""
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, TranscriptionFrame):
+            debug_state["last_transcription"] = frame.text
+            log(f"Heard: {frame.text}")
+
+        elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame):
+            # LLM response text
+            if frame.text:
+                debug_state["last_response"] = frame.text[:100]
+                log(f"Response: {frame.text[:50]}...")
+
+        await self.push_frame(frame, direction)
+
+
+# ============== TOOLS ==============
+
+VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
+face_renderer = None
+
+async def set_emotion(emotion: str):
+    global face_renderer
+    if emotion not in VALID_EMOTIONS:
+        return {"status": "error", "message": f"Invalid emotion"}
+    if face_renderer:
+        face_renderer.set_emotion(emotion)
+        log(f"Emotion: {emotion}")
+    return {"status": "success", "emotion": emotion}
+
+async def get_current_time(timezone: str = None):
+    from datetime import datetime
+    now = datetime.now()
+    return {"time": now.strftime("%I:%M %p"), "date": now.strftime("%A, %B %d, %Y")}
+
+emotion_tool = FunctionSchema(
+    name="set_emotion",
+    description="Set your facial expression",
+    properties={"emotion": {"type": "string", "enum": VALID_EMOTIONS}},
+    required=["emotion"],
+)
+
+time_tool = FunctionSchema(
+    name="get_current_time",
+    description="Get current time",
+    properties={},
+    required=[],
+)
+
+tools = ToolsSchema(standard_tools=[emotion_tool, time_tool])
+
+
+# ============== MAIN ==============
+
+async def run_luna(display_device: str = "/dev/fb0"):
+    global face_renderer
+
+    log("Starting Luna Pi Debug")
+    debug_state["started_at"] = time.time()
+
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        debug_state["status"] = "error: no ANTHROPIC_API_KEY"
+        debug_state["errors"].append("Missing ANTHROPIC_API_KEY")
+        return
+    if not os.getenv("OPENAI_API_KEY"):
+        debug_state["status"] = "error: no OPENAI_API_KEY"
+        debug_state["errors"].append("Missing OPENAI_API_KEY")
+        return
+
+    log("API keys found")
+
+    # Components
+    audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
+    audio_output = PyAudioOutput(sample_rate=48000)
+    framebuffer = FramebufferOutput(device=display_device)
+    debug_monitor = DebugMonitor()
+
+    face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
+    log("Face renderer created")
+
+    vad = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
+    log("VAD loaded")
+
+    stt = OpenAISTTService(api_key=os.getenv("OPENAI_API_KEY"), model="whisper-1")
+    tts = OpenAITTSService(api_key=os.getenv("OPENAI_API_KEY"), voice="nova")
+    llm = AnthropicLLMService(api_key=os.getenv("ANTHROPIC_API_KEY"), model="claude-3-5-haiku-latest")
+    log("AI services created")
+
+    llm.register_function("set_emotion", set_emotion)
+    llm.register_function("get_current_time", get_current_time)
+
+    messages = [{"role": "system", "content": """Your name is Luna. You are a friendly voice assistant.
+Keep responses SHORT - 1-2 sentences max. Use set_emotion to change your face expression."""}]
+
+    context = LLMContext(messages, tools)
+    context_aggregator = LLMContextAggregatorPair(context)
+
+    pipeline = Pipeline([
+        audio_input,
+        context_aggregator.user(),
+        stt,
+        debug_monitor,
+        llm,
+        tts,
+        face_renderer,
+        framebuffer,
+        audio_output,
+        context_aggregator.assistant(),
+    ])
+
+    task = PipelineTask(pipeline, params=PipelineParams(allow_interruptions=True, enable_metrics=True))
+
+    face_renderer.set_emotion("happy")
+    log("Pipeline ready - say something!")
+    debug_state["status"] = "running"
+
+    runner = PipelineRunner()
+    await runner.run(task)
+
+
+def run_web_server():
+    """Run web server in background thread."""
+    uvicorn.run(app, host="0.0.0.0", port=7860, log_level="warning")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Luna Pi Debug")
+    parser.add_argument("--display", "-d", default="/dev/fb0")
+    parser.add_argument("--no-web", action="store_true", help="Disable web interface")
+    args = parser.parse_args()
+
+    # Start web server in background
+    if not args.no_web:
+        web_thread = threading.Thread(target=run_web_server, daemon=True)
+        web_thread.start()
+        print(f"\n🌐 Debug interface: http://localhost:7860\n")
+
+    try:
+        asyncio.run(run_luna(display_device=args.display))
+    except KeyboardInterrupt:
+        log("Shutting down...")
+
+
+if __name__ == "__main__":
+    main()
