@@ -219,6 +219,8 @@ class CameraCapture:
         if self.picam is not None:
             # Pi Camera via picamera2 - returns RGB
             frame_rgb = self.picam.capture_array()
+            # Rotate 180 degrees (Pi Camera is often mounted upside down)
+            frame_rgb = cv2.rotate(frame_rgb, cv2.ROTATE_180) if CV2_AVAILABLE else frame_rgb[::-1, ::-1]
             # Convert RGB to BGR for OpenCV drawing functions
             frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR) if CV2_AVAILABLE else None
             return frame_rgb, frame_bgr
@@ -227,6 +229,8 @@ class CameraCapture:
             ret, frame_bgr = self.cap.read()
             if not ret:
                 return None, None
+            # Rotate 180 degrees
+            frame_bgr = cv2.rotate(frame_bgr, cv2.ROTATE_180)
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             return frame_rgb, frame_bgr
         return None, None
