@@ -1038,7 +1038,9 @@ class PyAudioOutput(FrameProcessor):
         self._play_thread = None
         self._running = False
         self._last_audio_time = 0
+        self._last_playback_end = 0  # When playback last ended (for grace period)
         self.BATCH_TIMEOUT = 0.15  # Seconds to wait before playing buffered audio
+        self.MUTE_GRACE_PERIOD = 1.0  # Keep mic muted for 1 second after playback ends
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -1112,7 +1114,16 @@ class PyAudioOutput(FrameProcessor):
                 # Check if we have buffered audio and enough time has passed
                 with self._buffer_lock:
                     if not self._audio_buffer:
-                        debug_state["speaker_active"] = False
+                        # Check grace period - keep muted for a bit after playback ends
+                        if self._last_playback_end > 0:
+                            time_since_playback = time.time() - self._last_playback_end
+                            if time_since_playback < self.MUTE_GRACE_PERIOD:
+                                # Still in grace period, keep muted
+                                continue
+                            else:
+                                # Grace period over, unmute
+                                debug_state["speaker_active"] = False
+                                self._last_playback_end = 0
                         continue
 
                     time_since_last = time.time() - self._last_audio_time
@@ -1139,16 +1150,22 @@ class PyAudioOutput(FrameProcessor):
                         wav.setframerate(self.sample_rate)
                         wav.writeframes(combined)
 
+                # Keep speaker_active=True during actual playback
+                debug_state["speaker_active"] = True
                 subprocess.run(
                     ['aplay', '-D', self.device, '-q', temp_wav],
                     capture_output=True, timeout=30
                 )
                 os.unlink(temp_wav)
-                debug_state["speaker_active"] = False
+
+                # Mark when playback ended - grace period starts now
+                self._last_playback_end = time.time()
+                # Don't set speaker_active=False yet - wait for grace period
 
             except Exception as e:
                 log(f"Playback error: {e}")
                 debug_state["speaker_active"] = False
+                self._last_playback_end = 0
 
     def _stop_playback(self):
         self._running = False
