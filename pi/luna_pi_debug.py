@@ -1284,7 +1284,9 @@ async def get_weather(params: FunctionCallParams):
             condition = weather_descriptions.get(weather_code, "unknown conditions")
 
             result = f"The weather in {city_name}, {country} is currently {temp} degrees Fahrenheit with {condition}. Wind speed is {wind} mph."
+            log(f"Weather result: {result}")
             await params.result_callback(result)
+            log("Weather result_callback completed")
 
     except Exception as e:
         log(f"Weather API error: {e}")
@@ -1715,31 +1717,20 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("take_photo", take_photo)
     llm.register_function("stay_quiet", stay_quiet)
 
-    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant with a small screen. Keep spoken responses to 1-2 sentences.
+    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences.
 
-CRITICAL RULES FOR TOOL CALLS:
-1. When using get_weather or web_search: Do NOT say anything before the tool call. Just call the tool silently.
-2. After the tool returns its result, SPEAK that result to the user immediately.
-3. The tool result contains the actual data - you MUST say it out loud.
-4. Never say "I'll check" or "Let me look" - just call the tool and speak the result.
+ABSOLUTE RULE: When a tool returns data, you MUST speak that data out loud immediately. No exceptions.
 
-Example for weather:
-- User: "What's the weather?"
-- You: [call get_weather tool with no text before it]
-- Tool returns: "The weather in NYC is 47 degrees with rain"
-- You: "It's 47 degrees in New York with rain right now."
+For get_weather and web_search:
+1. Call the tool (no text before)
+2. When you receive the result, SAY IT OUT LOUD to the user
+3. Example: Tool returns "47 degrees with rain" → You say "It's 47 degrees with rain!"
 
-Your tools:
-- get_weather: Get current weather (YOU HAVE REAL-TIME ACCESS!)
-- web_search: Search for news and current events
-- draw_pixel_art: Draw on 12x16 pixel grid
-- display_text: Show text/numbers/emojis on screen
-- take_photo: See through camera
-- set_emotion: Change your face expression
-- get_current_time: Get the time
-- stay_quiet: Stay silent with just an expression (use when user talks to themselves)
+NEVER use stay_quiet after get_weather or web_search - always speak the result!
 
-When drawing or showing text, also say something brief about it."""}]
+Tools: get_weather, web_search, draw_pixel_art, display_text, take_photo, set_emotion, get_current_time, stay_quiet
+
+Only use stay_quiet when user is clearly talking to someone else or mumbling to themselves - NOT after information requests."""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
