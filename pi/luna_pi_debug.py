@@ -757,16 +757,15 @@ class PyAudioInput(FrameProcessor):
 
 
 class PyAudioOutput(FrameProcessor):
-    """Plays audio through speaker using subprocess aplay for reliability."""
+    """Plays audio through speaker using streaming aplay process."""
 
     def __init__(self, sample_rate: int = 48000, channels: int = 1, device: str = "plughw:4,0"):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
         self.device = device  # ALSA device string
-        self._audio_queue = None
-        self._play_thread = None
-        self._running = False
+        self._aplay_proc = None
+        self._lock = threading.Lock()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -783,46 +782,28 @@ class PyAudioOutput(FrameProcessor):
             await self.push_frame(frame, direction)
 
     def _start_playback(self):
-        self._audio_queue = queue.Queue()
-        self._running = True
-        self._play_thread = threading.Thread(target=self._playback_thread, daemon=True)
-        self._play_thread.start()
-        log(f"Speaker started: {self.device}, {self.sample_rate}Hz, {self.channels}ch")
-
-    def _playback_thread(self):
-        """Background thread that plays audio chunks via aplay."""
+        """Start a persistent aplay process that accepts raw PCM via stdin."""
         import subprocess
-        import tempfile
-        import wave
-        import os
-
-        while self._running:
-            try:
-                # Get audio data from queue (blocks with timeout)
-                audio_data = self._audio_queue.get(timeout=0.5)
-                if audio_data is None:
-                    continue
-
-                # Write to temp WAV file
-                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
-                    temp_wav = f.name
-                    with wave.open(f, 'wb') as wav:
-                        wav.setnchannels(self.channels)
-                        wav.setsampwidth(2)
-                        wav.setframerate(self.sample_rate)
-                        wav.writeframes(audio_data)
-
-                # Play using aplay
-                subprocess.run(
-                    ['aplay', '-D', self.device, '-q', temp_wav],
-                    capture_output=True, timeout=10
-                )
-                os.unlink(temp_wav)
-
-            except queue.Empty:
-                continue
-            except Exception as e:
-                log(f"Playback error: {e}")
+        try:
+            # Start aplay in raw PCM mode, reading from stdin
+            self._aplay_proc = subprocess.Popen(
+                [
+                    'aplay', '-D', self.device,
+                    '-f', 'S16_LE',  # Signed 16-bit little-endian
+                    '-r', str(self.sample_rate),
+                    '-c', str(self.channels),
+                    '-t', 'raw',  # Raw PCM input
+                    '-q',  # Quiet
+                    '-'  # Read from stdin
+                ],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            log(f"Speaker started (streaming): {self.device}, {self.sample_rate}Hz, {self.channels}ch")
+        except Exception as e:
+            log(f"Failed to start aplay: {e}")
+            self._aplay_proc = None
 
     def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
         audio = np.frombuffer(data, dtype=np.int16)
@@ -833,7 +814,7 @@ class PyAudioOutput(FrameProcessor):
         return resampled.tobytes()
 
     def _play_audio(self, frame: OutputAudioRawFrame):
-        if self._audio_queue is None:
+        if self._aplay_proc is None or self._aplay_proc.stdin is None:
             return
         try:
             debug_state["speaker_active"] = True
@@ -847,24 +828,36 @@ class PyAudioOutput(FrameProcessor):
             # Convert stereo to mono if needed (take left channel)
             if frame.num_channels == 2 and self.channels == 1:
                 stereo = np.frombuffer(audio_data, dtype=np.int16)
-                mono = stereo[::2]  # Take every other sample (left channel)
+                mono = stereo[::2]
                 audio_data = mono.tobytes()
             elif frame.num_channels == 1 and self.channels == 2:
                 mono = np.frombuffer(audio_data, dtype=np.int16)
                 stereo = np.column_stack((mono, mono)).flatten()
                 audio_data = stereo.tobytes()
 
-            # Queue for playback thread
-            self._audio_queue.put(audio_data)
+            # Write directly to aplay's stdin (streaming)
+            with self._lock:
+                if self._aplay_proc and self._aplay_proc.stdin:
+                    self._aplay_proc.stdin.write(audio_data)
+                    self._aplay_proc.stdin.flush()
+
+        except BrokenPipeError:
+            # aplay died, restart it
+            log("aplay died, restarting...")
+            self._start_playback()
         except Exception as e:
             debug_state["errors"].append(f"Playback: {e}")
         finally:
             debug_state["speaker_active"] = False
 
     def _stop_playback(self):
-        self._running = False
-        if self._play_thread:
-            self._play_thread.join(timeout=2)
+        if self._aplay_proc:
+            try:
+                self._aplay_proc.stdin.close()
+                self._aplay_proc.wait(timeout=2)
+            except Exception:
+                self._aplay_proc.kill()
+            self._aplay_proc = None
         log("Speaker stopped")
 
 
@@ -981,6 +974,137 @@ async def get_current_time(params):
     now = datetime.now()
     return {"time": now.strftime("%I:%M %p"), "date": now.strftime("%A, %B %d, %Y")}
 
+
+async def draw_pixel_art(params):
+    """Draw pixel art on Luna's screen (12x16 grid)."""
+    global face_renderer
+    pixels = params.arguments.get("pixels", [])
+    background = params.arguments.get("background", "#1E1E28")
+    duration = params.arguments.get("duration", 8)
+    log(f"Drawing pixel art with {len(pixels)} pixels, bg={background}, duration={duration}s")
+
+    if not pixels:
+        return {"status": "error", "message": "No pixels provided"}
+
+    # Validate and clean up pixels
+    valid_pixels = []
+    for p in pixels:
+        x = p.get("x")
+        y = p.get("y")
+        color = p.get("color", "#FFFFFF")
+        if x is not None and y is not None:
+            valid_pixels.append({"x": int(x), "y": int(y), "color": str(color)})
+
+    if not valid_pixels:
+        return {"status": "error", "message": "No valid pixels found"}
+
+    if face_renderer:
+        face_renderer.set_pixel_art(valid_pixels, background)
+        log(f"Pixel art displayed with {len(valid_pixels)} pixels")
+
+        # Auto-clear after duration
+        async def auto_clear():
+            await asyncio.sleep(duration)
+            if face_renderer:
+                face_renderer.clear_pixel_art()
+                log("Auto-cleared pixel art")
+
+        asyncio.create_task(auto_clear())
+        return {"status": "success", "pixels_drawn": len(valid_pixels)}
+    return {"status": "error", "message": "Face renderer not ready"}
+
+
+async def clear_drawing(params):
+    """Clear pixel art and return to normal face display."""
+    global face_renderer
+    log("Clearing pixel art")
+    if face_renderer:
+        face_renderer.clear_pixel_art()
+        return {"status": "success"}
+    return {"status": "error", "message": "Face renderer not ready"}
+
+
+async def display_text(params):
+    """Display text on Luna's screen."""
+    global face_renderer
+    text = params.arguments.get("text", "")
+    font_size = params.arguments.get("font_size", "medium")
+    color = params.arguments.get("color", "#FFFFFF")
+    background = params.arguments.get("background", "#1E1E28")
+    align = params.arguments.get("align", "center")
+    valign = params.arguments.get("valign", "center")
+    duration = params.arguments.get("duration", 8)
+
+    log(f"Displaying text: '{text[:30]}...' size={font_size}")
+
+    if not text:
+        return {"status": "error", "message": "No text provided"}
+
+    if face_renderer:
+        face_renderer.set_text(text, font_size, color, background, align, valign)
+        log(f"Text displayed")
+
+        # Auto-clear after duration
+        async def auto_clear():
+            await asyncio.sleep(duration)
+            if face_renderer:
+                face_renderer.clear_text()
+                log("Auto-cleared text")
+
+        asyncio.create_task(auto_clear())
+        return {"status": "success"}
+    return {"status": "error", "message": "Display not ready"}
+
+
+async def clear_text_display(params):
+    """Clear text and return to face display."""
+    global face_renderer
+    log("Clearing text display")
+    if face_renderer:
+        face_renderer.clear_text()
+        return {"status": "success"}
+    return {"status": "error", "message": "Display not ready"}
+
+
+async def take_photo(params):
+    """Take a photo from the Pi camera and analyze it."""
+    global camera, face_renderer
+    log("Taking photo from Pi camera")
+
+    if camera is None or not debug_state["camera_enabled"]:
+        return {"status": "error", "message": "Camera not available"}
+
+    # Get the latest camera frame
+    if debug_state["last_camera_jpeg"]:
+        # We have a JPEG frame - convert to base64 for the LLM
+        import base64
+        jpeg_b64 = base64.b64encode(debug_state["last_camera_jpeg"]).decode('utf-8')
+        log(f"Photo captured: {len(debug_state['last_camera_jpeg'])} bytes")
+
+        # Return with image data for vision model
+        return {
+            "status": "success",
+            "message": "Photo captured. Describe what you see.",
+            "image_base64": jpeg_b64
+        }
+    return {"status": "error", "message": "No camera frame available"}
+
+
+async def stay_quiet(params):
+    """Stay quiet - respond with only a facial expression, no speech."""
+    global face_renderer
+    emotion = params.arguments.get("emotion", "neutral").lower()
+    log(f"Staying quiet with emotion: {emotion}")
+
+    if emotion not in VALID_EMOTIONS:
+        emotion = "neutral"
+
+    if face_renderer:
+        face_renderer.set_emotion(emotion)
+    return {"status": "quiet", "emotion": emotion}
+
+
+# Tool schemas
 emotion_tool = FunctionSchema(
     name="set_emotion",
     description="Set your facial expression",
@@ -995,7 +1119,78 @@ time_tool = FunctionSchema(
     required=[],
 )
 
-tools = ToolsSchema(standard_tools=[emotion_tool, time_tool])
+draw_tool = FunctionSchema(
+    name="draw_pixel_art",
+    description="Draw pixel art on your screen. Use this when asked to draw something. Your screen is a 12x16 pixel grid. Only specify colored pixels (sparse format).",
+    properties={
+        "pixels": {
+            "type": "array",
+            "description": "Array of pixels. Each has x (0-11), y (0-15), and color (hex like #FF0000)",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X position (0-11)"},
+                    "y": {"type": "integer", "description": "Y position (0-15)"},
+                    "color": {"type": "string", "description": "Hex color like #FF0000"},
+                },
+                "required": ["x", "y", "color"],
+            },
+        },
+        "background": {"type": "string", "description": "Background color hex (default: #1E1E28)"},
+        "duration": {"type": "integer", "description": "Seconds to show (default: 8)"},
+    },
+    required=["pixels"],
+)
+
+clear_draw_tool = FunctionSchema(
+    name="clear_drawing",
+    description="Clear pixel art and show face again",
+    properties={},
+    required=[],
+)
+
+display_text_tool = FunctionSchema(
+    name="display_text",
+    description="Display text, numbers, or emojis on your screen. Use when asked to show or write text.",
+    properties={
+        "text": {"type": "string", "description": "Text to display"},
+        "font_size": {"type": "string", "enum": ["small", "medium", "large", "xlarge"]},
+        "color": {"type": "string", "description": "Text color hex (default: #FFFFFF)"},
+        "background": {"type": "string", "description": "Background color hex"},
+        "align": {"type": "string", "enum": ["left", "center", "right"]},
+        "valign": {"type": "string", "enum": ["top", "center", "bottom"]},
+        "duration": {"type": "integer", "description": "Seconds to show (default: 8)"},
+    },
+    required=["text"],
+)
+
+clear_text_tool = FunctionSchema(
+    name="clear_text_display",
+    description="Clear text and show face again",
+    properties={},
+    required=[],
+)
+
+photo_tool = FunctionSchema(
+    name="take_photo",
+    description="Take a photo from the camera to see what's in front of you. Use when asked 'what do you see', 'look at me', etc.",
+    properties={},
+    required=[],
+)
+
+stay_quiet_tool = FunctionSchema(
+    name="stay_quiet",
+    description="Stay quiet with just a facial expression, no speech. Use when user is talking to themselves.",
+    properties={
+        "emotion": {"type": "string", "enum": VALID_EMOTIONS},
+    },
+    required=["emotion"],
+)
+
+tools = ToolsSchema(standard_tools=[
+    emotion_tool, time_tool, draw_tool, clear_draw_tool,
+    display_text_tool, clear_text_tool, photo_tool, stay_quiet_tool
+])
 
 
 # ============== MAIN ==============
@@ -1098,10 +1293,25 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     llm.register_function("set_emotion", set_emotion)
     llm.register_function("get_current_time", get_current_time)
+    llm.register_function("draw_pixel_art", draw_pixel_art)
+    llm.register_function("clear_drawing", clear_drawing)
+    llm.register_function("display_text", display_text)
+    llm.register_function("clear_text_display", clear_text_display)
+    llm.register_function("take_photo", take_photo)
+    llm.register_function("stay_quiet", stay_quiet)
 
-    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences.
+    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant with a small screen. Keep spoken responses to 1-2 sentences.
 
-You have a set_emotion tool but DO NOT use it unless specifically asked about emotions or feelings. Just talk normally."""}]
+IMPORTANT: Always speak your response out loud. Tool calls are silent - users can't hear them.
+
+Your abilities:
+- draw_pixel_art: Draw on 12x16 pixel grid when asked to draw
+- display_text: Show text/numbers/emojis on screen
+- take_photo: See through camera when asked "what do you see"
+- set_emotion: Change your face expression
+- get_current_time: Get the time
+
+When drawing or showing text, ALSO say something brief about it."""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
