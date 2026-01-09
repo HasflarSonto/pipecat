@@ -37,3 +37,6 @@ websockets>=12.0
 # Web server
 uvicorn>=0.30.0
 fastapi>=0.111.0
+
+# Touch screen support
+evdev>=1.6.0

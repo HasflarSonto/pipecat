@@ -109,7 +109,18 @@ debug_state = {
     "hand_detected": False,
     "gaze_x": 0.5,  # Current gaze position (0-1)
     "gaze_y": 0.5,
+    "touch_enabled": False,
+    "being_petted": False,
+    "pet_count": 0,
 }
+
+# Optional: evdev for touch screen
+try:
+    from evdev import InputDevice, ecodes
+    EVDEV_AVAILABLE = True
+except ImportError:
+    EVDEV_AVAILABLE = False
+    logger.info("evdev not available - touch screen disabled")
 
 
 def log(msg):
@@ -117,6 +128,182 @@ def log(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
     debug_state["logs"].append(f"[{timestamp}] {msg}")
     logger.info(msg)
+
+
+# ============== TOUCH SCREEN PETTING ==============
+
+class TouchPetting:
+    """Detects petting gestures on the touch screen.
+
+    Petting is detected when the user moves their finger up and down
+    repeatedly on the screen. Luna responds with happy emotions.
+    """
+
+    def __init__(self, face_renderer=None):
+        self.face_renderer = face_renderer
+        self.running = False
+        self.thread = None
+        self.device = None
+
+        # Touch state
+        self.touching = False
+        self.last_y = None
+        self.direction_changes = 0
+        self.last_direction = None  # 'up' or 'down'
+        self.stroke_start_time = None
+
+        # Petting detection parameters
+        self.MIN_Y_MOVEMENT = 200  # Raw units to count as movement
+        self.PET_THRESHOLD = 3  # Direction changes needed to trigger pet
+        self.PET_TIMEOUT = 1.5  # Seconds - reset if no movement
+        self.HAPPY_DURATION = 2.0  # How long to stay happy after petting
+
+        self.last_pet_time = 0
+        self.original_emotion = "neutral"
+
+    def find_touch_device(self):
+        """Auto-detect touch device."""
+        if not EVDEV_AVAILABLE:
+            return None
+
+        import os
+        # Try common event numbers first
+        for event_num in [5, 6, 0, 1, 2, 3, 4, 7, 8, 9]:
+            path = f"/dev/input/event{event_num}"
+            if os.path.exists(path):
+                try:
+                    dev = InputDevice(path)
+                    name = dev.name.lower()
+                    if "ads7846" in name or "touchscreen" in name or "touch" in name:
+                        log(f"Found touch device: {path} ({dev.name})")
+                        return dev
+                    dev.close()
+                except Exception:
+                    pass
+        return None
+
+    def start(self):
+        """Start touch detection in background thread."""
+        if not EVDEV_AVAILABLE:
+            log("Touch screen disabled - evdev not available")
+            return False
+
+        self.device = self.find_touch_device()
+        if not self.device:
+            log("No touch screen found")
+            return False
+
+        try:
+            self.device.grab()  # Prevent mouse emulation
+        except Exception as e:
+            log(f"Could not grab touch device: {e}")
+
+        self.running = True
+        self.thread = threading.Thread(target=self._touch_loop, daemon=True)
+        self.thread.start()
+        debug_state["touch_enabled"] = True
+        log("Touch screen petting enabled")
+        return True
+
+    def _touch_loop(self):
+        """Background thread for touch event processing."""
+        ry = 0
+
+        for event in self.device.read_loop():
+            if not self.running:
+                break
+
+            # Track Y coordinate
+            if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_Y:
+                ry = event.value
+
+                if self.touching and self.last_y is not None:
+                    # Check for direction change
+                    y_diff = ry - self.last_y
+
+                    if abs(y_diff) > self.MIN_Y_MOVEMENT:
+                        new_direction = 'down' if y_diff > 0 else 'up'
+
+                        if self.last_direction and new_direction != self.last_direction:
+                            # Direction changed! Count it
+                            self.direction_changes += 1
+
+                            if self.direction_changes >= self.PET_THRESHOLD:
+                                self._trigger_pet()
+                                self.direction_changes = 0
+
+                        self.last_direction = new_direction
+                        self.last_y = ry
+
+            # Track touch state
+            elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
+                was_touching = self.touching
+                self.touching = (event.value == 1)
+
+                if self.touching and not was_touching:
+                    # Touch started
+                    self.last_y = ry
+                    self.direction_changes = 0
+                    self.last_direction = None
+                    self.stroke_start_time = time.time()
+                    debug_state["being_petted"] = True
+
+                elif not self.touching and was_touching:
+                    # Touch ended
+                    self.last_y = None
+                    self.direction_changes = 0
+                    self.last_direction = None
+                    debug_state["being_petted"] = False
+
+                    # Check if we should restore emotion
+                    if time.time() - self.last_pet_time > self.HAPPY_DURATION:
+                        self._restore_emotion()
+
+    def _trigger_pet(self):
+        """Called when petting is detected."""
+        self.last_pet_time = time.time()
+        debug_state["pet_count"] = debug_state.get("pet_count", 0) + 1
+        log(f"Pet detected! (count: {debug_state['pet_count']})")
+
+        if self.face_renderer:
+            # Save current emotion if not already happy
+            current = getattr(self.face_renderer, '_emotion', 'neutral')
+            if current not in ['happy', 'excited']:
+                self.original_emotion = current
+
+            # Show happy reaction
+            self.face_renderer.set_emotion("happy")
+
+            # Schedule return to normal after delay
+            def restore_later():
+                time.sleep(self.HAPPY_DURATION)
+                if time.time() - self.last_pet_time >= self.HAPPY_DURATION:
+                    self._restore_emotion()
+
+            threading.Thread(target=restore_later, daemon=True).start()
+
+    def _restore_emotion(self):
+        """Restore emotion after petting ends."""
+        if self.face_renderer:
+            self.face_renderer.set_emotion(self.original_emotion)
+
+    def stop(self):
+        """Stop touch detection."""
+        self.running = False
+        if self.device:
+            try:
+                self.device.ungrab()
+            except Exception:
+                pass
+            self.device.close()
+        if self.thread:
+            self.thread.join(timeout=1)
+        debug_state["touch_enabled"] = False
+        log("Touch screen stopped")
+
+
+# Global touch instance
+touch_screen = None
 
 
 # ============== CAMERA WITH DETECTION ==============
@@ -570,6 +757,9 @@ async def get_status():
         "hand_detected": debug_state["hand_detected"],
         "gaze_x": debug_state["gaze_x"],
         "gaze_y": debug_state["gaze_y"],
+        "touch_enabled": debug_state["touch_enabled"],
+        "being_petted": debug_state["being_petted"],
+        "pet_count": debug_state["pet_count"],
     }
 
 
@@ -1196,7 +1386,7 @@ tools = ToolsSchema(standard_tools=[
 # ============== MAIN ==============
 
 async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
-    global face_renderer, camera
+    global face_renderer, camera, touch_screen
 
     log("Starting Luna Pi Debug")
     debug_state["started_at"] = time.time()
@@ -1282,6 +1472,10 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
         camera.start()
         log(f"Camera started with gaze tracking")
 
+    # Start touch screen petting detection
+    touch_screen = TouchPetting(face_renderer=face_renderer)
+    touch_screen.start()
+
     vad_analyzer = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
     vad = VADProcessor(vad_analyzer, sample_rate=16000)  # Wrap VAD for pipeline use
     log("VAD loaded")
@@ -1349,7 +1543,7 @@ async def run_web_server():
 
 async def main_async(display_device: str, camera_index: int = -1):
     """Run both web server and Luna concurrently."""
-    global camera
+    global camera, touch_screen
 
     # Start web server task
     web_task = asyncio.create_task(run_web_server())
@@ -1367,6 +1561,8 @@ async def main_async(display_device: str, camera_index: int = -1):
     finally:
         if camera:
             camera.stop()
+        if touch_screen:
+            touch_screen.stop()
         web_task.cancel()
 
 
