@@ -1,17 +1,19 @@
 #!/bin/bash
 # Luna Pi Setup Script
-# Sets up a Raspberry Pi to run Luna voice assistant client
+# Sets up a Raspberry Pi to run Luna voice assistant standalone
 
 set -e
 
 echo "========================================"
-echo "  Luna Pi Setup"
+echo "  Luna Pi Standalone Setup"
 echo "========================================"
 
 # Check if running on Raspberry Pi
 if [ ! -f /proc/device-tree/model ]; then
     echo "Warning: This doesn't appear to be a Raspberry Pi"
     echo "Continuing anyway..."
+else
+    echo "Detected: $(cat /proc/device-tree/model)"
 fi
 
 # Update system
@@ -31,99 +33,76 @@ sudo apt-get install -y \
     libportaudiocpp0 \
     portaudio19-dev \
     libasound2-dev \
-    libopus-dev \
-    libvpx-dev \
-    libsrtp2-dev \
-    libavformat-dev \
-    libavcodec-dev \
-    libavdevice-dev \
-    libavutil-dev \
-    libswscale-dev \
     libffi-dev \
     libssl-dev \
-    pkg-config \
-    ffmpeg
+    pkg-config
 
 # Create virtual environment
 echo ""
 echo ">>> Creating Python virtual environment..."
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/.."
 python3 -m venv .venv-pi
 source .venv-pi/bin/activate
 
-# Install Python dependencies
+# Install pipecat from local source
 echo ""
-echo ">>> Installing Python packages..."
+echo ">>> Installing pipecat..."
 pip install --upgrade pip
+pip install -e .
+
+# Install Pi-specific dependencies
+echo ""
+echo ">>> Installing Pi dependencies..."
 pip install -r pi/requirements-pi.txt
 
-# Configure audio
+# Add user to required groups
 echo ""
-echo ">>> Configuring audio..."
+echo ">>> Adding user to audio and video groups..."
+sudo usermod -aG audio,video $USER
 
-# Add user to audio group
-sudo usermod -aG audio $USER
+# Create .env file template if not exists
+if [ ! -f .env ]; then
+    echo ""
+    echo ">>> Creating .env template..."
+    cat > .env << 'ENV_EOF'
+# Luna Pi Configuration
+# Get your API keys from:
+# - Anthropic: https://console.anthropic.com/
+# - OpenAI: https://platform.openai.com/api-keys
 
-# Create ALSA configuration for USB mic if not exists
-if [ ! -f ~/.asoundrc ]; then
-    echo "Creating ~/.asoundrc..."
-    cat > ~/.asoundrc << 'ALSA_EOF'
-# Default to USB microphone for input, built-in audio for output
-pcm.!default {
-    type asym
-    playback.pcm {
-        type plug
-        slave.pcm "hw:0,0"
-    }
-    capture.pcm {
-        type plug
-        slave.pcm "hw:1,0"
-    }
-}
-
-ctl.!default {
-    type hw
-    card 0
-}
-ALSA_EOF
-    echo "Created ~/.asoundrc"
-    echo "Note: You may need to adjust hw:X,X based on your audio devices"
-    echo "Run 'arecord -l' to list recording devices"
-    echo "Run 'aplay -l' to list playback devices"
+ANTHROPIC_API_KEY=your_anthropic_key_here
+OPENAI_API_KEY=your_openai_key_here
+ENV_EOF
+    echo "Created .env - EDIT THIS FILE to add your API keys!"
 fi
 
-# Configure display
+# Create systemd service
 echo ""
-echo ">>> Display setup..."
-echo "Make sure your ILI9341 display is configured in /boot/firmware/config.txt"
-echo "See pi/README.md for display configuration details"
+echo ">>> Creating systemd service..."
+WORK_DIR="$(pwd)"
+USER_NAME="$(whoami)"
 
-# Create systemd service (optional)
-echo ""
-echo ">>> Creating systemd service (optional)..."
-sudo tee /etc/systemd/system/luna.service > /dev/null << 'SERVICE_EOF'
+sudo tee /etc/systemd/system/luna.service > /dev/null << SERVICE_EOF
 [Unit]
-Description=Luna Voice Assistant Client
+Description=Luna Voice Assistant
 After=network.target sound.target
 
 [Service]
 Type=simple
-User=pi
-WorkingDirectory=/home/pi/pipecat
-Environment=DISPLAY=:0
-ExecStart=/home/pi/pipecat/.venv-pi/bin/python pi/luna_pi_client.py --server http://YOUR_SERVER_IP:7860
+User=$USER_NAME
+WorkingDirectory=$WORK_DIR
+ExecStart=$WORK_DIR/.venv-pi/bin/python pi/luna_pi_standalone.py
 Restart=on-failure
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 SERVICE_EOF
 
-echo "Systemd service created at /etc/systemd/system/luna.service"
-echo "Edit it to set your server IP, then:"
-echo "  sudo systemctl daemon-reload"
-echo "  sudo systemctl enable luna"
-echo "  sudo systemctl start luna"
+sudo systemctl daemon-reload
 
 # Done
 echo ""
@@ -131,11 +110,30 @@ echo "========================================"
 echo "  Setup Complete!"
 echo "========================================"
 echo ""
-echo "Next steps:"
-echo "1. Configure your display in /boot/firmware/config.txt"
-echo "2. Check audio devices: arecord -l && aplay -l"
-echo "3. Update ~/.asoundrc if needed"
-echo "4. Test with: source .venv-pi/bin/activate && python pi/luna_pi_client.py --server http://YOUR_SERVER:7860"
+echo "NEXT STEPS:"
 echo ""
-echo "For display setup, see Readmetouchdisplayscreen.md"
+echo "1. ADD YOUR API KEYS:"
+echo "   nano .env"
+echo "   # Add your ANTHROPIC_API_KEY and OPENAI_API_KEY"
+echo ""
+echo "2. CHECK YOUR AUDIO DEVICES:"
+echo "   arecord -l    # List microphones"
+echo "   aplay -l      # List speakers"
+echo ""
+echo "3. TEST AUDIO:"
+echo "   # Test speaker"
+echo "   speaker-test -t wav -c 1"
+echo "   # Test mic (records 3 sec, plays back)"
+echo "   arecord -d 3 test.wav && aplay test.wav"
+echo ""
+echo "4. RUN LUNA:"
+echo "   source .venv-pi/bin/activate"
+echo "   python pi/luna_pi_standalone.py"
+echo ""
+echo "5. (OPTIONAL) RUN ON BOOT:"
+echo "   sudo systemctl enable luna"
+echo "   sudo systemctl start luna"
+echo "   # View logs: journalctl -u luna -f"
+echo ""
+echo "Display should already be configured per Readmetouchdisplayscreen.md"
 echo ""
