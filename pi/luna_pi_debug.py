@@ -154,8 +154,8 @@ class TouchPetting:
         self.stroke_start_time = None
 
         # Petting detection parameters
-        # Raw touch coordinates are 0-4095, so 300 is about 7% of screen
-        self.MIN_Y_MOVEMENT = 300  # Raw units to count as a stroke
+        # Raw touch coordinates are 0-4095, so 150 is about 3.5% of screen (more sensitive)
+        self.MIN_Y_MOVEMENT = 150  # Raw units to count as a stroke (lowered for sensitivity)
         self.PET_THRESHOLD = 1  # Direction changes needed (1 = just one up-down or down-up)
         self.PET_TIMEOUT = 1.5  # Seconds - reset if no movement
         self.HAPPY_DURATION = 2.0  # How long to stay happy after petting
@@ -216,71 +216,75 @@ class TouchPetting:
 
         log("Touch loop started, waiting for events...")
 
-        for event in self.device.read_loop():
-            if not self.running:
-                break
+        try:
+            for event in self.device.read_loop():
+                if not self.running:
+                    break
 
-            event_count += 1
-            if event_count == 1:
-                log("First touch event received!")
+                event_count += 1
+                if event_count == 1:
+                    log("First touch event received!")
 
-            # Track Y coordinate changes while touching
-            if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_Y:
-                new_ry = event.value
+                # Track Y coordinate changes while touching
+                if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_Y:
+                    new_ry = event.value
 
-                if self.touching:
-                    # Calculate movement from stroke anchor
-                    if stroke_anchor_y is not None:
-                        y_diff = new_ry - stroke_anchor_y
+                    if self.touching:
+                        # Calculate movement from stroke anchor
+                        if stroke_anchor_y is not None:
+                            y_diff = new_ry - stroke_anchor_y
 
-                        if abs(y_diff) > self.MIN_Y_MOVEMENT:
-                            new_direction = 'down' if y_diff > 0 else 'up'
+                            if abs(y_diff) > self.MIN_Y_MOVEMENT:
+                                new_direction = 'down' if y_diff > 0 else 'up'
 
-                            # First direction or direction change?
-                            if self.last_direction is None:
-                                self.last_direction = new_direction
-                                log(f"Stroke started: {new_direction} (Y: {stroke_anchor_y} -> {new_ry})")
-                            elif new_direction != self.last_direction:
-                                # Direction changed! Count it
-                                self.direction_changes += 1
-                                log(f"Direction change #{self.direction_changes}: {self.last_direction} -> {new_direction}")
+                                # First direction or direction change?
+                                if self.last_direction is None:
+                                    self.last_direction = new_direction
+                                    log(f"Stroke started: {new_direction} (Y: {stroke_anchor_y} -> {new_ry})")
+                                elif new_direction != self.last_direction:
+                                    # Direction changed! Count it
+                                    self.direction_changes += 1
+                                    log(f"Direction change #{self.direction_changes}: {self.last_direction} -> {new_direction}")
 
-                                if self.direction_changes >= self.PET_THRESHOLD:
-                                    self._trigger_pet()
-                                    self.direction_changes = 0
+                                    if self.direction_changes >= self.PET_THRESHOLD:
+                                        self._trigger_pet()
+                                        self.direction_changes = 0
 
-                                self.last_direction = new_direction
+                                    self.last_direction = new_direction
 
-                            # Update anchor for next stroke detection
-                            stroke_anchor_y = new_ry
+                                # Update anchor for next stroke detection
+                                stroke_anchor_y = new_ry
 
-                ry = new_ry
+                    ry = new_ry
 
-            # Track touch state
-            elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
-                was_touching = self.touching
-                self.touching = (event.value == 1)
+                # Track touch state
+                elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
+                    was_touching = self.touching
+                    self.touching = (event.value == 1)
 
-                if self.touching and not was_touching:
-                    # Touch started
-                    log(f"Touch DOWN at Y={ry}")
-                    stroke_anchor_y = ry
-                    self.direction_changes = 0
-                    self.last_direction = None
-                    self.stroke_start_time = time.time()
-                    debug_state["being_petted"] = True
+                    if self.touching and not was_touching:
+                        # Touch started
+                        log(f"Touch DOWN at Y={ry}")
+                        stroke_anchor_y = ry
+                        self.direction_changes = 0
+                        self.last_direction = None
+                        self.stroke_start_time = time.time()
+                        debug_state["being_petted"] = True
 
-                elif not self.touching and was_touching:
-                    # Touch ended
-                    log(f"Touch UP at Y={ry}, direction changes: {self.direction_changes}")
-                    stroke_anchor_y = None
-                    self.direction_changes = 0
-                    self.last_direction = None
-                    debug_state["being_petted"] = False
+                    elif not self.touching and was_touching:
+                        # Touch ended
+                        log(f"Touch UP at Y={ry}, direction changes: {self.direction_changes}")
+                        stroke_anchor_y = None
+                        self.direction_changes = 0
+                        self.last_direction = None
+                        debug_state["being_petted"] = False
 
-                    # Check if we should restore emotion
-                    if time.time() - self.last_pet_time > self.HAPPY_DURATION:
-                        self._restore_emotion()
+                        # Check if we should restore emotion
+                        if time.time() - self.last_pet_time > self.HAPPY_DURATION:
+                            self._restore_emotion()
+        except OSError:
+            # Device closed during shutdown - this is expected
+            pass
 
     def _trigger_pet(self):
         """Called when petting is detected - make face bounce!"""
@@ -1202,7 +1206,11 @@ class VADProcessor(FrameProcessor):
 # ============== DEBUG MONITOR ==============
 
 class DebugMonitor(FrameProcessor):
-    """Monitors frames for debug display."""
+    """Monitors frames for debug display and controls thinking indicator."""
+
+    def __init__(self, face_renderer=None):
+        super().__init__()
+        self._face_renderer = face_renderer
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -1210,24 +1218,33 @@ class DebugMonitor(FrameProcessor):
         if isinstance(frame, VADUserStartedSpeakingFrame):
             debug_state["vad_speaking"] = True
             log("VAD: Speech started")
+            # Clear thinking when user starts speaking
+            if self._face_renderer:
+                self._face_renderer.set_thinking(False)
 
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             debug_state["vad_speaking"] = False
             log("VAD: Speech stopped")
+            # Show thinking indicator when processing starts
+            if self._face_renderer:
+                self._face_renderer.set_thinking(True)
 
         elif isinstance(frame, TranscriptionFrame):
             debug_state["last_transcription"] = frame.text
             log(f"Heard: {frame.text}")
 
         elif isinstance(frame, TextFrame) and not isinstance(frame, TranscriptionFrame):
-            # LLM response text
+            # LLM response text - clear thinking indicator
             if frame.text:
                 debug_state["last_response"] = frame.text[:100]
                 log(f"TTS TEXT: {frame.text}")
+                if self._face_renderer:
+                    self._face_renderer.set_thinking(False)
 
         elif isinstance(frame, OutputAudioRawFrame):
-            # Audio being sent to speaker
-            log(f"AUDIO OUT: {len(frame.audio)} bytes")
+            # Audio being sent to speaker - clear thinking
+            if self._face_renderer:
+                self._face_renderer.set_thinking(False)
 
         await self.push_frame(frame, direction)
 
@@ -1682,10 +1699,12 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
     audio_output = PyAudioOutput(sample_rate=48000, channels=1)  # Auto-detects speaker
     framebuffer = FramebufferOutput(device=display_device)
-    debug_monitor = DebugMonitor()
 
     face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
     log("Face renderer created")
+
+    # Debug monitor with face renderer for thinking indicator
+    debug_monitor = DebugMonitor(face_renderer=face_renderer)
 
     # Start camera with gaze tracking (after face_renderer is created)
     if camera_index >= 0:
@@ -1697,9 +1716,13 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     touch_screen = TouchPetting(face_renderer=face_renderer)
     touch_screen.start()
 
-    vad_analyzer = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
-    vad = VADProcessor(vad_analyzer, sample_rate=16000)  # Wrap VAD for pipeline use
-    log("VAD loaded")
+    # Faster VAD settings for quicker response
+    vad_analyzer = SileroVADAnalyzer(params=VADParams(
+        stop_secs=0.3,  # Reduced from 0.5 - faster response after user stops talking
+        min_volume=0.5   # Slightly lower threshold for better sensitivity
+    ))
+    vad = VADProcessor(vad_analyzer, sample_rate=16000)
+    log("VAD loaded (fast settings)")
 
     stt = OpenAISTTService(api_key=os.getenv("OPENAI_API_KEY"), model="whisper-1")
     tts = OpenAITTSService(api_key=os.getenv("OPENAI_API_KEY"), voice="nova")

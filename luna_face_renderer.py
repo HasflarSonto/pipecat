@@ -227,6 +227,18 @@ class LunaFaceRenderer(FrameProcessor):
             "xlarge": 64,
         }
 
+        # Thinking indicator state
+        self._thinking = False
+        self._thinking_dots = 0
+        self._last_thinking_update = 0
+
+    def set_thinking(self, thinking: bool):
+        """Set whether Luna is thinking/processing."""
+        self._thinking = thinking
+        if thinking:
+            self._thinking_dots = 0
+            self._last_thinking_update = time.time()
+
     def set_text(
         self,
         text: str,
@@ -859,6 +871,29 @@ class LunaFaceRenderer(FrameProcessor):
         # Draw sparkles if excited
         if params.get("sparkle") and self.emotion_transition > 0.5:
             self._draw_sparkles(draw)
+
+        # Draw thinking indicator in bottom right corner
+        if self._thinking:
+            current_time = time.time()
+            # Animate dots (cycle every 0.4 seconds)
+            if current_time - self._last_thinking_update > 0.4:
+                self._thinking_dots = (self._thinking_dots + 1) % 4
+                self._last_thinking_update = current_time
+
+            # Draw dots in bottom right
+            dot_radius = 4
+            dot_spacing = 12
+            base_x = self.width - 25
+            base_y = self.height - 20
+
+            for i in range(3):
+                # Show dots progressively based on animation state
+                alpha = 255 if i < self._thinking_dots else 80
+                dot_color = (alpha, alpha, alpha)
+                x = base_x + i * dot_spacing
+                draw.ellipse([x - dot_radius, base_y - dot_radius,
+                             x + dot_radius, base_y + dot_radius],
+                            fill=dot_color)
 
         return img
 
