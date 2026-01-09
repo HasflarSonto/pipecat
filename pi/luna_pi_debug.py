@@ -72,10 +72,8 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame,
     OutputAudioRawFrame, StartFrame, EndFrame, TranscriptionFrame,
-    TextFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
-    BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+    TextFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
 )
-from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteConfig, STTMuteStrategy
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -977,6 +975,12 @@ class PyAudioInput(FrameProcessor):
                 audio = np.frombuffer(data, dtype=np.int16)
                 debug_state["mic_level"] = np.abs(audio).mean() / 32768
 
+                # ECHO CANCELLATION: Don't send mic audio while speaker is playing
+                # This prevents Luna from hearing herself
+                if debug_state.get("speaker_active", False):
+                    await asyncio.sleep(0.001)
+                    continue
+
                 if self._need_resample:
                     data = self._resample(data, self.sample_rate, self.output_sample_rate)
 
@@ -1743,25 +1747,25 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("take_photo", take_photo)
 
-    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences. Always respond to the user - never stay silent.
+    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences.
 
-When a tool returns data, speak that data to the user. The weather tool already shows info on screen, so just say the temperature and conditions briefly.
+IMPORTANT RULES:
+- NEVER announce what tools you're using. Don't say "I'll set an emotion" or "Let me check the weather" - just DO it silently and respond naturally.
+- set_emotion is SILENT - use it freely to match your mood but NEVER mention it.
+- When weather returns data, just say the temperature naturally like "It's 72 degrees and sunny in Seattle."
+- Always respond to the user - never stay silent.
 
-Tools: get_weather (shows on screen + returns spoken text), web_search, draw_pixel_art, display_text, take_photo, set_emotion, get_current_time"""}]
+Tools: get_weather, web_search, draw_pixel_art, display_text, take_photo, set_emotion, get_current_time"""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # Mute STT while Luna is speaking to prevent echo/feedback
-    stt_mute_filter = STTMuteFilter(config=STTMuteConfig(
-        strategies={STTMuteStrategy.ALWAYS}  # Mute mic whenever bot is speaking
-    ))
-    log("STT mute filter enabled - prevents echo")
+    # Echo cancellation is handled in PyAudioInput by checking debug_state["speaker_active"]
+    log("Echo cancellation enabled - mic mutes when speaker is active")
 
     pipeline = Pipeline([
-        audio_input,
+        audio_input,  # Mic input (mutes when speaker_active)
         vad,  # VAD must be before STT to generate speaking/stopped frames
-        stt_mute_filter,  # Mute STT while Luna speaks to prevent echo
         stt,
         debug_monitor,  # Monitor VAD frames + transcriptions (all pass through)
         context_aggregator.user(),
