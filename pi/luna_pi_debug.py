@@ -930,12 +930,20 @@ class DebugMonitor(FrameProcessor):
 VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
 face_renderer = None
 
-async def set_emotion(emotion: str):
+async def set_emotion(params):
+    """Set Luna's facial expression.
+
+    Args:
+        params: FunctionCallParams with arguments={'emotion': str}
+    """
     global face_renderer
+    # Extract emotion from params (pipecat passes FunctionCallParams object)
+    emotion = params.arguments.get("emotion") if hasattr(params, 'arguments') else params
+
     log(f"set_emotion called with: {emotion}, face_renderer={face_renderer is not None}")
     if emotion not in VALID_EMOTIONS:
         log(f"Invalid emotion: {emotion}")
-        return {"status": "error", "message": f"Invalid emotion"}
+        return {"status": "error", "message": f"Invalid emotion: {emotion}"}
     if face_renderer:
         face_renderer.set_emotion(emotion)
         log(f"Emotion set to: {emotion}")
@@ -943,7 +951,8 @@ async def set_emotion(emotion: str):
         log("WARNING: face_renderer is None!")
     return {"status": "success", "emotion": emotion}
 
-async def get_current_time(timezone: str = None):
+async def get_current_time(params):
+    """Get the current time."""
     from datetime import datetime
     now = datetime.now()
     return {"time": now.strftime("%I:%M %p"), "date": now.strftime("%A, %B %d, %Y")}
