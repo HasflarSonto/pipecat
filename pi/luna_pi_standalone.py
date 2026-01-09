@@ -39,6 +39,7 @@ from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, Sta
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.services.anthropic.llm import AnthropicLLMService
@@ -487,23 +488,20 @@ Be helpful but brief. Your name is Luna."""
     ]
 
     # Context aggregator for conversation
-    context = LLMContextAggregatorPair(
-        messages=messages,
-        tools=tools,
-        vad_analyzer=vad,
-    )
+    context = LLMContext(messages, tools)
+    context_aggregator = LLMContextAggregatorPair(context)
 
     # Build pipeline
     pipeline = Pipeline([
-        audio_input,           # Mic → audio frames
-        context.user(),        # Aggregate user speech
-        stt,                   # Speech → text
-        llm,                   # Text → response
-        tts,                   # Response → speech
-        face_renderer,         # Generate face video
-        framebuffer,           # Video → display
-        audio_output,          # Audio → speaker
-        context.assistant(),   # Track assistant responses
+        audio_input,                    # Mic → audio frames
+        context_aggregator.user(),      # Aggregate user speech
+        stt,                            # Speech → text
+        llm,                            # Text → response
+        tts,                            # Response → speech
+        face_renderer,                  # Generate face video
+        framebuffer,                    # Video → display
+        audio_output,                   # Audio → speaker
+        context_aggregator.assistant(), # Track assistant responses
     ])
 
     # Create and run task
