@@ -35,7 +35,7 @@ from PIL import Image
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, StartFrame, EndFrame
+from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame, StartFrame, EndFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -256,7 +256,7 @@ class PyAudioInput(FrameProcessor):
                 if self._need_resample:
                     data = self._resample(data, self.sample_rate, self.output_sample_rate)
 
-                audio_frame = AudioRawFrame(
+                audio_frame = InputAudioRawFrame(
                     audio=data,
                     sample_rate=self.output_sample_rate,
                     num_channels=self.channels,
