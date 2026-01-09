@@ -756,15 +756,16 @@ class PyAudioInput(FrameProcessor):
 
 
 class PyAudioOutput(FrameProcessor):
-    """Plays audio through speaker."""
+    """Plays audio through speaker using subprocess aplay for reliability."""
 
-    def __init__(self, sample_rate: int = 48000, channels: int = 2, device_index: int = None):
+    def __init__(self, sample_rate: int = 48000, channels: int = 1, device: str = "plughw:4,0"):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
-        self.device_index = device_index
-        self.pyaudio = None
-        self.stream = None
+        self.device = device  # ALSA device string
+        self._audio_queue = None
+        self._play_thread = None
+        self._running = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -781,35 +782,47 @@ class PyAudioOutput(FrameProcessor):
             await self.push_frame(frame, direction)
 
     def _start_playback(self):
-        try:
-            import pyaudio
-            self.pyaudio = pyaudio.PyAudio()
+        import queue
+        self._audio_queue = queue.Queue()
+        self._running = True
+        self._play_thread = threading.Thread(target=self._playback_thread, daemon=True)
+        self._play_thread.start()
+        log(f"Speaker started: {self.device}, {self.sample_rate}Hz, {self.channels}ch")
 
-            device_index = self.device_index
-            if device_index is None:
-                for i in range(self.pyaudio.get_device_count()):
-                    dev = self.pyaudio.get_device_info_by_index(i)
-                    if dev['maxOutputChannels'] > 0:
-                        name = dev['name'].lower()
-                        log(f"Output device [{i}]: {dev['name']}")
-                        if 'usb' in name or 'uac' in name:
-                            device_index = i
-                            break
-                        elif device_index is None:
-                            device_index = i
+    def _playback_thread(self):
+        """Background thread that plays audio chunks via aplay."""
+        import subprocess
+        import tempfile
+        import wave
+        import os
 
-            self.stream = self.pyaudio.open(
-                format=pyaudio.paInt16,
-                channels=self.channels,
-                rate=self.sample_rate,
-                output=True,
-                output_device_index=device_index,
-            )
-            log(f"Speaker started: device {device_index}, {self.sample_rate}Hz, {self.channels}ch")
+        while self._running:
+            try:
+                # Get audio data from queue (blocks with timeout)
+                audio_data = self._audio_queue.get(timeout=0.5)
+                if audio_data is None:
+                    continue
 
-        except Exception as e:
-            log(f"Speaker error: {e}")
-            debug_state["errors"].append(f"Speaker: {e}")
+                # Write to temp WAV file
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                    temp_wav = f.name
+                    with wave.open(f, 'wb') as wav:
+                        wav.setnchannels(self.channels)
+                        wav.setsampwidth(2)
+                        wav.setframerate(self.sample_rate)
+                        wav.writeframes(audio_data)
+
+                # Play using aplay
+                subprocess.run(
+                    ['aplay', '-D', self.device, '-q', temp_wav],
+                    capture_output=True, timeout=10
+                )
+                os.unlink(temp_wav)
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                log(f"Playback error: {e}")
 
     def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
         audio = np.frombuffer(data, dtype=np.int16)
@@ -820,32 +833,38 @@ class PyAudioOutput(FrameProcessor):
         return resampled.tobytes()
 
     def _play_audio(self, frame: OutputAudioRawFrame):
-        if self.stream:
-            try:
-                debug_state["speaker_active"] = True
-                audio_data = frame.audio
-                input_rate = frame.sample_rate
+        if self._audio_queue is None:
+            return
+        try:
+            debug_state["speaker_active"] = True
+            audio_data = frame.audio
+            input_rate = frame.sample_rate
 
-                if input_rate != self.sample_rate:
-                    audio_data = self._resample(audio_data, input_rate, self.sample_rate)
+            # Resample if needed
+            if input_rate != self.sample_rate:
+                audio_data = self._resample(audio_data, input_rate, self.sample_rate)
 
-                if frame.num_channels == 1 and self.channels == 2:
-                    mono = np.frombuffer(audio_data, dtype=np.int16)
-                    stereo = np.column_stack((mono, mono)).flatten()
-                    audio_data = stereo.tobytes()
+            # Convert stereo to mono if needed (take left channel)
+            if frame.num_channels == 2 and self.channels == 1:
+                stereo = np.frombuffer(audio_data, dtype=np.int16)
+                mono = stereo[::2]  # Take every other sample (left channel)
+                audio_data = mono.tobytes()
+            elif frame.num_channels == 1 and self.channels == 2:
+                mono = np.frombuffer(audio_data, dtype=np.int16)
+                stereo = np.column_stack((mono, mono)).flatten()
+                audio_data = stereo.tobytes()
 
-                self.stream.write(audio_data)
-            except Exception as e:
-                debug_state["errors"].append(f"Playback: {e}")
-            finally:
-                debug_state["speaker_active"] = False
+            # Queue for playback thread
+            self._audio_queue.put(audio_data)
+        except Exception as e:
+            debug_state["errors"].append(f"Playback: {e}")
+        finally:
+            debug_state["speaker_active"] = False
 
     def _stop_playback(self):
-        if self.stream:
-            self.stream.stop_stream()
-            self.stream.close()
-        if self.pyaudio:
-            self.pyaudio.terminate()
+        self._running = False
+        if self._play_thread:
+            self._play_thread.join(timeout=2)
         log("Speaker stopped")
 
 
@@ -993,57 +1012,64 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     log("API keys found")
 
-    # Test speaker at startup
+    # Test speaker at startup using aplay (more reliable than PyAudio for USB speakers)
     log("Testing speaker...")
     try:
-        import pyaudio
+        import subprocess
         import struct
         import math
+        import tempfile
+        import wave
 
-        pa = pyaudio.PyAudio()
-
-        # Find USB speaker
-        speaker_index = None
-        for i in range(pa.get_device_count()):
-            dev = pa.get_device_info_by_index(i)
-            if dev['maxOutputChannels'] > 0:
-                name = dev['name'].lower()
-                if 'usb' in name or 'uac' in name:
-                    speaker_index = i
-                    break
-                elif speaker_index is None:
-                    speaker_index = i
-
-        # Generate a short beep (440Hz for 0.3 seconds)
+        # Generate a short beep (1000Hz for 0.3 seconds) as WAV file
         sample_rate = 48000
         duration = 0.3
-        frequency = 440
+        frequency = 1000
         samples = int(sample_rate * duration)
-        beep_data = b''
-        for i in range(samples):
-            # Stereo: duplicate each sample
-            value = int(16000 * math.sin(2 * math.pi * frequency * i / sample_rate))
-            beep_data += struct.pack('<hh', value, value)  # Left and right channel
 
-        stream = pa.open(
-            format=pyaudio.paInt16,
-            channels=2,
-            rate=sample_rate,
-            output=True,
-            output_device_index=speaker_index,
+        # Create mono audio data
+        audio_data = []
+        for i in range(samples):
+            value = int(16000 * math.sin(2 * math.pi * frequency * i / sample_rate))
+            audio_data.append(struct.pack('<h', value))
+
+        # Write to temp WAV file
+        with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+            temp_wav = f.name
+            with wave.open(f, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(b''.join(audio_data))
+
+        # Play using aplay with plughw (handles format conversion)
+        # Try card 4 first (USB speaker), fall back to card 0 (headphones)
+        result = subprocess.run(
+            ['aplay', '-D', 'plughw:4,0', temp_wav],
+            capture_output=True, text=True, timeout=5
         )
-        stream.write(beep_data)
-        stream.stop_stream()
-        stream.close()
-        pa.terminate()
-        log("Speaker test: OK (beep played)")
+        if result.returncode != 0:
+            log(f"USB speaker (card 4) failed, trying headphones (card 0)...")
+            result = subprocess.run(
+                ['aplay', '-D', 'plughw:0,0', temp_wav],
+                capture_output=True, text=True, timeout=5
+            )
+
+        import os
+        os.unlink(temp_wav)
+
+        if result.returncode == 0:
+            log("Speaker test: OK (beep played)")
+        else:
+            log(f"Speaker test FAILED: {result.stderr}")
+            debug_state["errors"].append(f"Speaker test: {result.stderr}")
     except Exception as e:
         log(f"Speaker test FAILED: {e}")
         debug_state["errors"].append(f"Speaker test: {e}")
 
     # Components
     audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
-    audio_output = PyAudioOutput(sample_rate=48000)
+    audio_output = PyAudioOutput(sample_rate=48000, channels=1, device="plughw:4,0")
     framebuffer = FramebufferOutput(device=display_device)
     debug_monitor = DebugMonitor()
 
