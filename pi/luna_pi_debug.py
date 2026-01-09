@@ -260,7 +260,7 @@ class TouchPetting:
                         self._restore_emotion()
 
     def _trigger_pet(self):
-        """Called when petting is detected."""
+        """Called when petting is detected - make face bounce!"""
         self.last_pet_time = time.time()
         debug_state["pet_count"] = debug_state.get("pet_count", 0) + 1
         log(f"Pet detected! (count: {debug_state['pet_count']})")
@@ -271,10 +271,28 @@ class TouchPetting:
             if current not in ['happy', 'excited']:
                 self.original_emotion = current
 
-            # Show happy reaction
+            # Show happy emotion
             self.face_renderer.set_emotion("happy")
 
-            # Schedule return to normal after delay
+            # Make face bounce up and down
+            def bounce_face():
+                # Bounce animation - move face up and down using gaze
+                for i in range(4):  # 4 bounces
+                    # Move down
+                    if self.face_renderer:
+                        self.face_renderer.set_gaze(0.5, 0.7)  # Look down
+                    time.sleep(0.1)
+                    # Move up
+                    if self.face_renderer:
+                        self.face_renderer.set_gaze(0.5, 0.3)  # Look up
+                    time.sleep(0.1)
+                # Return to center
+                if self.face_renderer:
+                    self.face_renderer.set_gaze(0.5, 0.5)
+
+            threading.Thread(target=bounce_face, daemon=True).start()
+
+            # Schedule return to normal emotion after delay
             def restore_later():
                 time.sleep(self.HAPPY_DURATION)
                 if time.time() - self.last_pet_time >= self.HAPPY_DURATION:
@@ -947,15 +965,19 @@ class PyAudioInput(FrameProcessor):
 
 
 class PyAudioOutput(FrameProcessor):
-    """Plays audio through speaker using streaming aplay process."""
+    """Plays audio through speaker by batching chunks and using aplay."""
 
     def __init__(self, sample_rate: int = 48000, channels: int = 1, device: str = "plughw:4,0"):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
-        self.device = device  # ALSA device string
-        self._aplay_proc = None
-        self._lock = threading.Lock()
+        self.device = device
+        self._audio_buffer = []
+        self._buffer_lock = threading.Lock()
+        self._play_thread = None
+        self._running = False
+        self._last_audio_time = 0
+        self.BATCH_TIMEOUT = 0.15  # Seconds to wait before playing buffered audio
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -963,7 +985,7 @@ class PyAudioOutput(FrameProcessor):
             self._start_playback()
             await self.push_frame(frame, direction)
         elif isinstance(frame, OutputAudioRawFrame):
-            self._play_audio(frame)
+            self._queue_audio(frame)
             await self.push_frame(frame, direction)
         elif isinstance(frame, EndFrame):
             self._stop_playback()
@@ -972,28 +994,11 @@ class PyAudioOutput(FrameProcessor):
             await self.push_frame(frame, direction)
 
     def _start_playback(self):
-        """Start a persistent aplay process that accepts raw PCM via stdin."""
-        import subprocess
-        try:
-            # Start aplay in raw PCM mode, reading from stdin
-            self._aplay_proc = subprocess.Popen(
-                [
-                    'aplay', '-D', self.device,
-                    '-f', 'S16_LE',  # Signed 16-bit little-endian
-                    '-r', str(self.sample_rate),
-                    '-c', str(self.channels),
-                    '-t', 'raw',  # Raw PCM input
-                    '-q',  # Quiet
-                    '-'  # Read from stdin
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            log(f"Speaker started (streaming): {self.device}, {self.sample_rate}Hz, {self.channels}ch")
-        except Exception as e:
-            log(f"Failed to start aplay: {e}")
-            self._aplay_proc = None
+        """Start background thread for batched playback."""
+        self._running = True
+        self._play_thread = threading.Thread(target=self._playback_loop, daemon=True)
+        self._play_thread.start()
+        log(f"Speaker started (batched): {self.device}, {self.sample_rate}Hz")
 
     def _resample(self, data: bytes, from_rate: int, to_rate: int) -> bytes:
         audio = np.frombuffer(data, dtype=np.int16)
@@ -1003,11 +1008,9 @@ class PyAudioOutput(FrameProcessor):
         resampled = np.interp(indices, np.arange(len(audio)), audio).astype(np.int16)
         return resampled.tobytes()
 
-    def _play_audio(self, frame: OutputAudioRawFrame):
-        if self._aplay_proc is None or self._aplay_proc.stdin is None:
-            return
+    def _queue_audio(self, frame: OutputAudioRawFrame):
+        """Queue audio for batched playback."""
         try:
-            debug_state["speaker_active"] = True
             audio_data = frame.audio
             input_rate = frame.sample_rate
 
@@ -1015,7 +1018,7 @@ class PyAudioOutput(FrameProcessor):
             if input_rate != self.sample_rate:
                 audio_data = self._resample(audio_data, input_rate, self.sample_rate)
 
-            # Convert stereo to mono if needed (take left channel)
+            # Convert stereo to mono if needed
             if frame.num_channels == 2 and self.channels == 1:
                 stereo = np.frombuffer(audio_data, dtype=np.int16)
                 mono = stereo[::2]
@@ -1025,29 +1028,76 @@ class PyAudioOutput(FrameProcessor):
                 stereo = np.column_stack((mono, mono)).flatten()
                 audio_data = stereo.tobytes()
 
-            # Write directly to aplay's stdin (streaming)
-            with self._lock:
-                if self._aplay_proc and self._aplay_proc.stdin:
-                    self._aplay_proc.stdin.write(audio_data)
-                    self._aplay_proc.stdin.flush()
+            with self._buffer_lock:
+                self._audio_buffer.append(audio_data)
+                self._last_audio_time = time.time()
 
-        except BrokenPipeError:
-            # aplay died, restart it
-            log("aplay died, restarting...")
-            self._start_playback()
+            debug_state["speaker_active"] = True
         except Exception as e:
-            debug_state["errors"].append(f"Playback: {e}")
-        finally:
-            debug_state["speaker_active"] = False
+            debug_state["errors"].append(f"Audio queue: {e}")
+
+    def _playback_loop(self):
+        """Background thread that batches and plays audio."""
+        import subprocess
+        import tempfile
+        import wave
+        import os
+
+        while self._running:
+            try:
+                # Wait for audio or timeout
+                time.sleep(0.05)
+
+                # Check if we have buffered audio and enough time has passed
+                with self._buffer_lock:
+                    if not self._audio_buffer:
+                        debug_state["speaker_active"] = False
+                        continue
+
+                    time_since_last = time.time() - self._last_audio_time
+                    if time_since_last < self.BATCH_TIMEOUT and len(self._audio_buffer) < 20:
+                        # Wait for more audio
+                        continue
+
+                    # Grab all buffered audio
+                    audio_chunks = self._audio_buffer[:]
+                    self._audio_buffer.clear()
+
+                if not audio_chunks:
+                    continue
+
+                # Combine chunks
+                combined = b''.join(audio_chunks)
+
+                # Write to temp WAV and play
+                with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
+                    temp_wav = f.name
+                    with wave.open(f, 'wb') as wav:
+                        wav.setnchannels(self.channels)
+                        wav.setsampwidth(2)
+                        wav.setframerate(self.sample_rate)
+                        wav.writeframes(combined)
+
+                subprocess.run(
+                    ['aplay', '-D', self.device, '-q', temp_wav],
+                    capture_output=True, timeout=30
+                )
+                os.unlink(temp_wav)
+                debug_state["speaker_active"] = False
+
+            except Exception as e:
+                log(f"Playback error: {e}")
+                debug_state["speaker_active"] = False
 
     def _stop_playback(self):
-        if self._aplay_proc:
-            try:
-                self._aplay_proc.stdin.close()
-                self._aplay_proc.wait(timeout=2)
-            except Exception:
-                self._aplay_proc.kill()
-            self._aplay_proc = None
+        self._running = False
+        # Play any remaining audio
+        with self._buffer_lock:
+            if self._audio_buffer:
+                # Force play remaining
+                self._last_audio_time = 0
+        if self._play_thread:
+            self._play_thread.join(timeout=2)
         log("Speaker stopped")
 
 
