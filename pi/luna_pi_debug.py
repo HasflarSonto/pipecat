@@ -106,6 +106,8 @@ debug_state = {
     "camera_enabled": False,
     "face_detected": False,
     "hand_detected": False,
+    "gaze_x": 0.5,  # Current gaze position (0-1)
+    "gaze_y": 0.5,
 }
 
 
@@ -124,9 +126,11 @@ class CameraCapture:
     Supports:
     - Pi Camera via picamera2 (libcamera stack)
     - USB cameras via OpenCV VideoCapture
+    - Gaze tracking: sends face position to Luna's face renderer
     """
 
-    def __init__(self, camera_index: int = 0, width: int = 320, height: int = 240, use_picamera: bool = True):
+    def __init__(self, camera_index: int = 0, width: int = 320, height: int = 240,
+                 use_picamera: bool = True, face_renderer: "LunaFaceRenderer" = None):
         self.camera_index = camera_index
         self.width = width
         self.height = height
@@ -135,6 +139,7 @@ class CameraCapture:
         self.picam = None  # Picamera2 instance
         self.running = False
         self.thread = None
+        self.face_renderer = face_renderer  # Reference to Luna's face for gaze tracking
 
         # MediaPipe detectors
         self.face_detection = None
@@ -267,12 +272,37 @@ class CameraCapture:
                     )
                     if len(faces) > 0:
                         face_detected = True
-                        for (x, y, w, h) in faces:
+                        # Use the largest face for gaze tracking
+                        largest_face = max(faces, key=lambda f: f[2] * f[3])
+                        x, y, w, h = largest_face
+
+                        # Calculate face center as normalized position (0-1)
+                        # Camera sees mirror image, so invert X
+                        face_center_x = 1.0 - ((x + w / 2) / self.width)
+                        face_center_y = (y + h / 2) / self.height
+
+                        # Update gaze - Luna looks AT the user's face
+                        debug_state["gaze_x"] = face_center_x
+                        debug_state["gaze_y"] = face_center_y
+
+                        # Send to face renderer if available
+                        if self.face_renderer:
+                            self.face_renderer.set_gaze(face_center_x, face_center_y)
+
+                        # Draw all detected faces
+                        for (fx, fy, fw, fh) in faces:
                             # Draw green rectangle around face
-                            cv2.rectangle(frame_bgr, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                            cv2.rectangle(frame_bgr, (fx, fy), (fx+fw, fy+fh), (0, 255, 0), 2)
                             # Draw label
-                            cv2.putText(frame_bgr, "Face", (x, y-10),
+                            cv2.putText(frame_bgr, "Face", (fx, fy-10),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    else:
+                        # No face detected - reset gaze to center
+                        debug_state["gaze_x"] = 0.5
+                        debug_state["gaze_y"] = 0.5
+                        if self.face_renderer:
+                            self.face_renderer.set_gaze(0.5, 0.5)
+
                     draw_frame = frame_bgr
 
                 debug_state["face_detected"] = face_detected
@@ -380,9 +410,10 @@ async def index():
     if debug_state["camera_enabled"]:
         camera_html = """
             <div class="video-container">
-                <h2>Camera (Detection)</h2>
+                <h2>Camera (Detection + Gaze)</h2>
                 <img src="/camera" width="320" height="240" alt="Camera Feed">
                 <p><span id="detection-status" class="value"></span></p>
+                <p><span class="label">Gaze:</span> <span id="gaze-status" class="value"></span></p>
             </div>
         """
     else:
@@ -439,6 +470,13 @@ async def index():
                     if (data.hand_detected) status.push('✋ Hand');
                     det.textContent = status.length ? status.join(' | ') : 'No detection';
                     det.style.color = status.length ? '#4ade80' : '#888';
+                }}
+                // Gaze status
+                const gaze = document.getElementById('gaze-status');
+                if (gaze) {{
+                    const x = (data.gaze_x * 100).toFixed(0);
+                    const y = (data.gaze_y * 100).toFixed(0);
+                    gaze.textContent = `X: ${{x}}% Y: ${{y}}%`;
                 }}
             }}, 500);
         </script>
@@ -507,6 +545,8 @@ async def get_status():
         "camera_enabled": debug_state["camera_enabled"],
         "face_detected": debug_state["face_detected"],
         "hand_detected": debug_state["hand_detected"],
+        "gaze_x": debug_state["gaze_x"],
+        "gaze_y": debug_state["gaze_y"],
     }
 
 
@@ -901,8 +941,8 @@ tools = ToolsSchema(standard_tools=[emotion_tool, time_tool])
 
 # ============== MAIN ==============
 
-async def run_luna(display_device: str = "/dev/fb0"):
-    global face_renderer
+async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
+    global face_renderer, camera
 
     log("Starting Luna Pi Debug")
     debug_state["started_at"] = time.time()
@@ -926,6 +966,12 @@ async def run_luna(display_device: str = "/dev/fb0"):
 
     face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
     log("Face renderer created")
+
+    # Start camera with gaze tracking (after face_renderer is created)
+    if camera_index >= 0:
+        camera = CameraCapture(camera_index=camera_index, face_renderer=face_renderer)
+        camera.start()
+        log(f"Camera started with gaze tracking")
 
     vad_analyzer = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
     vad = VADProcessor(vad_analyzer, sample_rate=16000)  # Wrap VAD for pipeline use
@@ -992,11 +1038,6 @@ async def main_async(display_device: str, camera_index: int = -1):
     """Run both web server and Luna concurrently."""
     global camera
 
-    # Start camera if enabled
-    if camera_index >= 0:
-        camera = CameraCapture(camera_index=camera_index)
-        camera.start()
-
     # Start web server task
     web_task = asyncio.create_task(run_web_server())
     log("Web server starting on http://0.0.0.0:7860")
@@ -1004,9 +1045,9 @@ async def main_async(display_device: str, camera_index: int = -1):
     # Give web server a moment to start
     await asyncio.sleep(1)
 
-    # Run Luna
+    # Run Luna (camera will be started inside after face_renderer is created)
     try:
-        await run_luna(display_device=display_device)
+        await run_luna(display_device=display_device, camera_index=camera_index)
     except Exception as e:
         log(f"Luna error: {e}")
         debug_state["errors"].append(str(e))
