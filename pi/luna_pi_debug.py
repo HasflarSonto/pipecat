@@ -32,13 +32,21 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 import threading
 
-# Optional: OpenCV for camera
+# Optional: OpenCV for camera and image processing
 try:
     import cv2
     CV2_AVAILABLE = True
 except ImportError:
     CV2_AVAILABLE = False
-    logger.warning("OpenCV not available - camera disabled")
+    logger.warning("OpenCV not available - face detection disabled")
+
+# Optional: Picamera2 for Raspberry Pi Camera
+try:
+    from picamera2 import Picamera2
+    PICAMERA2_AVAILABLE = True
+except ImportError:
+    PICAMERA2_AVAILABLE = False
+    logger.info("Picamera2 not available - will try OpenCV for USB cameras")
 
 # Optional: MediaPipe for detection (may not be available on Pi)
 try:
@@ -111,13 +119,20 @@ def log(msg):
 # ============== CAMERA WITH DETECTION ==============
 
 class CameraCapture:
-    """Captures camera frames and runs face/hand detection."""
+    """Captures camera frames and runs face/hand detection.
 
-    def __init__(self, camera_index: int = 0, width: int = 320, height: int = 240):
+    Supports:
+    - Pi Camera via picamera2 (libcamera stack)
+    - USB cameras via OpenCV VideoCapture
+    """
+
+    def __init__(self, camera_index: int = 0, width: int = 320, height: int = 240, use_picamera: bool = True):
         self.camera_index = camera_index
         self.width = width
         self.height = height
-        self.cap = None
+        self.use_picamera = use_picamera and PICAMERA2_AVAILABLE
+        self.cap = None  # OpenCV VideoCapture
+        self.picam = None  # Picamera2 instance
         self.running = False
         self.thread = None
 
@@ -132,8 +147,29 @@ class CameraCapture:
 
     def start(self):
         """Start camera capture in background thread."""
+        # Try Pi Camera first if available and requested
+        if self.use_picamera:
+            try:
+                self.picam = Picamera2()
+                # Configure for still capture with preview
+                config = self.picam.create_preview_configuration(
+                    main={"size": (self.width, self.height), "format": "RGB888"}
+                )
+                self.picam.configure(config)
+                self.picam.start()
+                log(f"Pi Camera started via picamera2 ({self.width}x{self.height})")
+
+                self._start_detection_and_loop()
+                return True
+
+            except Exception as e:
+                log(f"Pi Camera error: {e}, trying OpenCV...")
+                self.picam = None
+                # Fall through to try OpenCV
+
+        # Fall back to OpenCV for USB cameras
         if not CV2_AVAILABLE:
-            log("Camera disabled - OpenCV not installed")
+            log("Camera disabled - neither picamera2 nor OpenCV available")
             return False
 
         try:
@@ -146,22 +182,8 @@ class CameraCapture:
                 log(f"Failed to open camera {self.camera_index}")
                 return False
 
-            if MP_AVAILABLE:
-                self.face_detection = self.mp_face.FaceDetection(
-                    model_selection=0, min_detection_confidence=0.5
-                )
-                self.hand_detection = self.mp_hands.Hands(
-                    static_image_mode=False,
-                    max_num_hands=2,
-                    min_detection_confidence=0.5,
-                    min_tracking_confidence=0.5
-                )
-
-            self.running = True
-            self.thread = threading.Thread(target=self._capture_loop, daemon=True)
-            self.thread.start()
-            debug_state["camera_enabled"] = True
-            log(f"Camera started (index {self.camera_index})")
+            log(f"USB camera started via OpenCV (index {self.camera_index})")
+            self._start_detection_and_loop()
             return True
 
         except Exception as e:
@@ -169,40 +191,77 @@ class CameraCapture:
             debug_state["errors"].append(f"Camera: {e}")
             return False
 
+    def _start_detection_and_loop(self):
+        """Initialize detection and start capture thread."""
+        if MP_AVAILABLE:
+            self.face_detection = self.mp_face.FaceDetection(
+                model_selection=0, min_detection_confidence=0.5
+            )
+            self.hand_detection = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=2,
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5
+            )
+
+        self.running = True
+        self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.thread.start()
+        debug_state["camera_enabled"] = True
+
+    def _capture_frame(self):
+        """Capture a single frame from camera (Pi Camera or USB)."""
+        if self.picam is not None:
+            # Pi Camera via picamera2 - returns RGB
+            frame_rgb = self.picam.capture_array()
+            # Convert RGB to BGR for OpenCV drawing functions
+            frame_bgr = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR) if CV2_AVAILABLE else None
+            return frame_rgb, frame_bgr
+        elif self.cap is not None:
+            # USB camera via OpenCV - returns BGR
+            ret, frame_bgr = self.cap.read()
+            if not ret:
+                return None, None
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            return frame_rgb, frame_bgr
+        return None, None
+
     def _capture_loop(self):
         """Background thread for camera capture."""
         while self.running:
             try:
-                ret, frame = self.cap.read()
-                if not ret:
+                frame_rgb, frame_bgr = self._capture_frame()
+                if frame_rgb is None:
                     time.sleep(0.1)
                     continue
-
-                # Convert BGR to RGB for detection
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 face_detected = False
                 hand_detected = False
 
-                if MP_AVAILABLE and self.face_detection and self.hand_detection:
-                    # Use MediaPipe for detection
-                    face_results = self.face_detection.process(rgb_frame)
+                # For detection drawing, we need BGR frame (OpenCV format)
+                # If no OpenCV, we'll convert RGB to JPEG directly via PIL
+                draw_frame = frame_bgr if frame_bgr is not None else frame_rgb
+
+                if MP_AVAILABLE and self.face_detection and self.hand_detection and frame_bgr is not None:
+                    # Use MediaPipe for detection (needs RGB input)
+                    face_results = self.face_detection.process(frame_rgb)
                     if face_results.detections:
                         face_detected = True
                         for detection in face_results.detections:
-                            self.mp_draw.draw_detection(frame, detection)
+                            self.mp_draw.draw_detection(frame_bgr, detection)
 
-                    hand_results = self.hand_detection.process(rgb_frame)
+                    hand_results = self.hand_detection.process(frame_rgb)
                     if hand_results.multi_hand_landmarks:
                         hand_detected = True
                         for hand_landmarks in hand_results.multi_hand_landmarks:
                             self.mp_draw.draw_landmarks(
-                                frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                                frame_bgr, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
                             )
+                    draw_frame = frame_bgr
 
-                elif HAAR_FACE_CASCADE is not None:
+                elif HAAR_FACE_CASCADE is not None and frame_bgr is not None:
                     # Fallback: Use OpenCV Haar cascade for face detection
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
                     faces = HAAR_FACE_CASCADE.detectMultiScale(
                         gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
                     )
@@ -210,22 +269,31 @@ class CameraCapture:
                         face_detected = True
                         for (x, y, w, h) in faces:
                             # Draw green rectangle around face
-                            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                            cv2.rectangle(frame_bgr, (x, y), (x+w, y+h), (0, 255, 0), 2)
                             # Draw label
-                            cv2.putText(frame, "Face", (x, y-10),
+                            cv2.putText(frame_bgr, "Face", (x, y-10),
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    draw_frame = frame_bgr
 
                 debug_state["face_detected"] = face_detected
                 debug_state["hand_detected"] = hand_detected
 
                 # Encode as JPEG
-                _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
-                debug_state["last_camera_jpeg"] = jpeg.tobytes()
+                if CV2_AVAILABLE and draw_frame is not None and len(draw_frame.shape) == 3:
+                    _, jpeg = cv2.imencode('.jpg', draw_frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    debug_state["last_camera_jpeg"] = jpeg.tobytes()
+                else:
+                    # Fallback: use PIL to encode RGB frame
+                    img = Image.fromarray(frame_rgb)
+                    jpeg_buffer = io.BytesIO()
+                    img.save(jpeg_buffer, format='JPEG', quality=80)
+                    debug_state["last_camera_jpeg"] = jpeg_buffer.getvalue()
 
                 time.sleep(0.067)  # ~15 FPS
 
             except Exception as e:
                 debug_state["errors"].append(f"Camera capture: {e}")
+                log(f"Camera capture error: {e}")
                 time.sleep(0.5)
 
     def stop(self):
@@ -235,6 +303,9 @@ class CameraCapture:
             self.thread.join(timeout=1)
         if self.cap:
             self.cap.release()
+        if self.picam:
+            self.picam.stop()
+            self.picam.close()
         if self.face_detection:
             self.face_detection.close()
         if self.hand_detection:
