@@ -156,7 +156,7 @@ class TouchPetting:
         # Petting detection parameters
         # Raw touch coordinates are 0-4095, so 300 is about 7% of screen
         self.MIN_Y_MOVEMENT = 300  # Raw units to count as a stroke
-        self.PET_THRESHOLD = 2  # Direction changes needed (down-up-down = 2 changes)
+        self.PET_THRESHOLD = 1  # Direction changes needed (1 = just one up-down or down-up)
         self.PET_TIMEOUT = 1.5  # Seconds - reset if no movement
         self.HAPPY_DURATION = 2.0  # How long to stay happy after petting
 
@@ -1237,6 +1237,106 @@ class DebugMonitor(FrameProcessor):
 VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
 face_renderer = None
 
+
+async def get_weather(params: FunctionCallParams):
+    """Get current weather for a location using Open-Meteo API (free, no key needed)."""
+    import aiohttp
+    location = params.arguments.get("location", "New York")
+    log(f"Getting weather for: {location}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Geocode the location
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={location}&count=1"
+            async with session.get(geo_url) as resp:
+                geo_data = await resp.json()
+
+            if not geo_data.get("results"):
+                await params.result_callback(f"I couldn't find the location '{location}'. Please try a different city name.")
+                return
+
+            lat = geo_data["results"][0]["latitude"]
+            lon = geo_data["results"][0]["longitude"]
+            city_name = geo_data["results"][0]["name"]
+            country = geo_data["results"][0].get("country", "")
+
+            # Get weather data
+            weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current=temperature_2m,weather_code,wind_speed_10m&temperature_unit=fahrenheit"
+            async with session.get(weather_url) as resp:
+                weather_data = await resp.json()
+
+            current = weather_data.get("current", {})
+            temp = current.get("temperature_2m", "unknown")
+            wind = current.get("wind_speed_10m", "unknown")
+            weather_code = current.get("weather_code", 0)
+
+            # Map weather codes to descriptions
+            weather_descriptions = {
+                0: "clear sky",
+                1: "mainly clear", 2: "partly cloudy", 3: "overcast",
+                45: "foggy", 48: "depositing rime fog",
+                51: "light drizzle", 53: "moderate drizzle", 55: "dense drizzle",
+                61: "slight rain", 63: "moderate rain", 65: "heavy rain",
+                71: "slight snow", 73: "moderate snow", 75: "heavy snow",
+                80: "slight rain showers", 81: "moderate rain showers", 82: "violent rain showers",
+                95: "thunderstorm", 96: "thunderstorm with slight hail", 99: "thunderstorm with heavy hail",
+            }
+            condition = weather_descriptions.get(weather_code, "unknown conditions")
+
+            result = f"The weather in {city_name}, {country} is currently {temp} degrees Fahrenheit with {condition}. Wind speed is {wind} mph."
+            await params.result_callback(result)
+
+    except Exception as e:
+        log(f"Weather API error: {e}")
+        await params.result_callback(f"I had trouble getting the weather. Please try again.")
+
+
+async def web_search(params: FunctionCallParams):
+    """Search the web using Google News RSS."""
+    import aiohttp
+    from urllib.parse import quote_plus
+    import re
+
+    query = params.arguments.get("query", "")
+    log(f"Searching web for: {query}")
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Use Google News RSS feed for search
+            url = f"https://news.google.com/rss/search?q={quote_plus(query)}&hl=en-US&gl=US&ceid=US:en"
+
+            async with session.get(url) as resp:
+                rss = await resp.text()
+
+            # Extract news titles from RSS
+            results = []
+
+            # Find title elements
+            title_pattern = r'<title>([^<]+)</title>'
+            titles = re.findall(title_pattern, rss)
+
+            # Skip the first two titles (feed title and "Google News")
+            news_titles = [t for t in titles[2:] if t and not t.startswith('"')]
+
+            # Get top 3 headlines
+            for title in news_titles[:3]:
+                clean_title = title.strip()
+                if clean_title:
+                    results.append(clean_title)
+
+            if results:
+                combined = " | ".join(results)
+                if len(combined) > 600:
+                    combined = combined[:600] + "..."
+                await params.result_callback(f"LIVE NEWS RESULTS: {combined}")
+            else:
+                await params.result_callback(f"I couldn't find news results for '{query}'. Try a different search term.")
+
+    except Exception as e:
+        log(f"Search error: {e}")
+        await params.result_callback("I had trouble searching. Please try again.")
+
+
 async def set_emotion(params):
     """Set Luna's facial expression.
 
@@ -1398,6 +1498,30 @@ async def stay_quiet(params: FunctionCallParams):
 
 
 # Tool schemas
+weather_tool = FunctionSchema(
+    name="get_weather",
+    description="Get the current weather for a location. Use this when the user asks about weather.",
+    properties={
+        "location": {
+            "type": "string",
+            "description": "The city name, e.g. 'San Francisco' or 'London'",
+        },
+    },
+    required=["location"],
+)
+
+search_tool = FunctionSchema(
+    name="web_search",
+    description="Search the web for information. Use this when the user asks about facts, news, current events, or anything you don't know.",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "The search query",
+        },
+    },
+    required=["query"],
+)
+
 emotion_tool = FunctionSchema(
     name="set_emotion",
     description="Set your facial expression",
@@ -1481,7 +1605,7 @@ stay_quiet_tool = FunctionSchema(
 )
 
 tools = ToolsSchema(standard_tools=[
-    emotion_tool, time_tool, draw_tool, clear_draw_tool,
+    weather_tool, search_tool, emotion_tool, time_tool, draw_tool, clear_draw_tool,
     display_text_tool, clear_text_tool, photo_tool, stay_quiet_tool
 ])
 
@@ -1580,6 +1704,8 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm = AnthropicLLMService(api_key=os.getenv("ANTHROPIC_API_KEY"), model="claude-3-5-haiku-latest")
     log("AI services created")
 
+    llm.register_function("get_weather", get_weather)
+    llm.register_function("web_search", web_search)
     llm.register_function("set_emotion", set_emotion)
     llm.register_function("get_current_time", get_current_time)
     llm.register_function("draw_pixel_art", draw_pixel_art)
@@ -1594,13 +1720,17 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 IMPORTANT: Always speak your response out loud. Tool calls are silent - users can't hear them.
 
 Your abilities:
+- get_weather: Get current weather for any city
+- web_search: Search the web for news and current events
 - draw_pixel_art: Draw on 12x16 pixel grid when asked to draw
 - display_text: Show text/numbers/emojis on screen
 - take_photo: See through camera when asked "what do you see"
 - set_emotion: Change your face expression
 - get_current_time: Get the time
 
-When drawing or showing text, ALSO say something brief about it."""}]
+When drawing or showing text, ALSO say something brief about it.
+When asked about weather, use get_weather tool - you have real-time access!
+When asked about news or facts you don't know, use web_search tool."""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
