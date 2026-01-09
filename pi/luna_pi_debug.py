@@ -263,7 +263,8 @@ class TouchPetting:
         """Called when petting is detected - make face bounce!"""
         self.last_pet_time = time.time()
         debug_state["pet_count"] = debug_state.get("pet_count", 0) + 1
-        log(f"Pet detected! (count: {debug_state['pet_count']})")
+        log(f"🐱 PET DETECTED! (count: {debug_state['pet_count']})")
+        print(f"\n{'='*40}\n🐱 PET DETECTED! Count: {debug_state['pet_count']}\n{'='*40}\n")
 
         if self.face_renderer:
             # Save current emotion if not already happy
@@ -964,14 +965,37 @@ class PyAudioInput(FrameProcessor):
                 await asyncio.sleep(0.1)
 
 
+def find_speaker_device():
+    """Auto-detect USB speaker device by testing common card numbers."""
+    import subprocess
+
+    # Try cards 3, 4, 2, 0 (common USB speaker locations)
+    for card in [3, 4, 2, 0]:
+        device = f"plughw:{card},0"
+        try:
+            # Quick test with aplay
+            result = subprocess.run(
+                ['aplay', '-D', device, '-d', '0', '/dev/zero'],
+                capture_output=True, timeout=2
+            )
+            # If it doesn't error immediately, it's probably valid
+            log(f"Found speaker at {device}")
+            return device
+        except Exception:
+            continue
+
+    log("No USB speaker found, defaulting to plughw:0,0")
+    return "plughw:0,0"
+
+
 class PyAudioOutput(FrameProcessor):
     """Plays audio through speaker by batching chunks and using aplay."""
 
-    def __init__(self, sample_rate: int = 48000, channels: int = 1, device: str = "plughw:4,0"):
+    def __init__(self, sample_rate: int = 48000, channels: int = 1, device: str = None):
         super().__init__()
         self.sample_rate = sample_rate
         self.channels = channels
-        self.device = device
+        self.device = device if device else find_speaker_device()
         self._audio_buffer = []
         self._buffer_lock = threading.Lock()
         self._play_thread = None
@@ -1452,29 +1476,30 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     log("API keys found")
 
-    # Test speaker at startup using aplay (more reliable than PyAudio for USB speakers)
-    log("Testing speaker...")
+    # Auto-detect and test speaker
+    log("Detecting speaker...")
+    speaker_device = find_speaker_device()
+
+    log(f"Testing speaker on {speaker_device}...")
     try:
         import subprocess
         import struct
         import math
         import tempfile
         import wave
-        import os as os_module  # Use alias to avoid shadowing global os
+        import os as os_module
 
-        # Generate a short beep (1000Hz for 0.3 seconds) as WAV file
+        # Generate a short beep (1000Hz for 0.3 seconds)
         sample_rate = 48000
         duration = 0.3
         frequency = 1000
         samples = int(sample_rate * duration)
 
-        # Create mono audio data
         audio_data = []
         for i in range(samples):
             value = int(16000 * math.sin(2 * math.pi * frequency * i / sample_rate))
             audio_data.append(struct.pack('<h', value))
 
-        # Write to temp WAV file
         with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as f:
             temp_wav = f.name
             with wave.open(f, 'wb') as wav:
@@ -1483,23 +1508,14 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
                 wav.setframerate(sample_rate)
                 wav.writeframes(b''.join(audio_data))
 
-        # Play using aplay with plughw (handles format conversion)
-        # Try card 4 first (USB speaker), fall back to card 0 (headphones)
         result = subprocess.run(
-            ['aplay', '-D', 'plughw:4,0', temp_wav],
+            ['aplay', '-D', speaker_device, temp_wav],
             capture_output=True, text=True, timeout=5
         )
-        if result.returncode != 0:
-            log(f"USB speaker (card 4) failed, trying headphones (card 0)...")
-            result = subprocess.run(
-                ['aplay', '-D', 'plughw:0,0', temp_wav],
-                capture_output=True, text=True, timeout=5
-            )
-
         os_module.unlink(temp_wav)
 
         if result.returncode == 0:
-            log("Speaker test: OK (beep played)")
+            log(f"Speaker test: OK (beep played on {speaker_device})")
         else:
             log(f"Speaker test FAILED: {result.stderr}")
             debug_state["errors"].append(f"Speaker test: {result.stderr}")
@@ -1509,7 +1525,7 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     # Components
     audio_input = PyAudioInput(sample_rate=44100, output_sample_rate=16000)
-    audio_output = PyAudioOutput(sample_rate=48000, channels=1, device="plughw:4,0")
+    audio_output = PyAudioOutput(sample_rate=48000, channels=1)  # Auto-detects speaker
     framebuffer = FramebufferOutput(device=display_device)
     debug_monitor = DebugMonitor()
 
