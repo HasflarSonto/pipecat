@@ -35,7 +35,7 @@ from PIL import Image
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame, StartFrame, EndFrame
+from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame, OutputAudioRawFrame, StartFrame, EndFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -288,7 +288,8 @@ class PyAudioOutput(FrameProcessor):
             self._start_playback()
             await self.push_frame(frame, direction)
 
-        elif isinstance(frame, AudioRawFrame):
+        elif isinstance(frame, OutputAudioRawFrame):
+            # Only play OUTPUT audio (from TTS), not input audio (from mic)
             self._play_audio(frame)
             await self.push_frame(frame, direction)
 
