@@ -1240,6 +1240,7 @@ face_renderer = None
 
 async def get_weather(params: FunctionCallParams):
     """Get current weather for a location using Open-Meteo API (free, no key needed)."""
+    global face_renderer
     import aiohttp
     location = params.arguments.get("location", "New York")
     log(f"Getting weather for: {location}")
@@ -1272,21 +1273,45 @@ async def get_weather(params: FunctionCallParams):
 
             # Map weather codes to descriptions
             weather_descriptions = {
-                0: "clear sky",
-                1: "mainly clear", 2: "partly cloudy", 3: "overcast",
-                45: "foggy", 48: "depositing rime fog",
-                51: "light drizzle", 53: "moderate drizzle", 55: "dense drizzle",
-                61: "slight rain", 63: "moderate rain", 65: "heavy rain",
-                71: "slight snow", 73: "moderate snow", 75: "heavy snow",
-                80: "slight rain showers", 81: "moderate rain showers", 82: "violent rain showers",
-                95: "thunderstorm", 96: "thunderstorm with slight hail", 99: "thunderstorm with heavy hail",
+                0: "☀️", 1: "🌤️", 2: "⛅", 3: "☁️",
+                45: "🌫️", 48: "🌫️",
+                51: "🌧️", 53: "🌧️", 55: "🌧️",
+                61: "🌧️", 63: "🌧️", 65: "🌧️",
+                71: "❄️", 73: "❄️", 75: "❄️",
+                80: "🌦️", 81: "🌦️", 82: "🌦️",
+                95: "⛈️", 96: "⛈️", 99: "⛈️",
             }
-            condition = weather_descriptions.get(weather_code, "unknown conditions")
+            weather_emoji = weather_descriptions.get(weather_code, "🌡️")
 
-            result = f"The weather in {city_name}, {country} is currently {temp} degrees Fahrenheit with {condition}. Wind speed is {wind} mph."
-            log(f"Weather result: {result}")
-            await params.result_callback(result)
-            log("Weather result_callback completed")
+            condition_names = {
+                0: "clear", 1: "clear", 2: "cloudy", 3: "overcast",
+                45: "foggy", 48: "foggy",
+                51: "drizzle", 53: "drizzle", 55: "drizzle",
+                61: "rain", 63: "rain", 65: "heavy rain",
+                71: "snow", 73: "snow", 75: "heavy snow",
+                80: "showers", 81: "showers", 82: "showers",
+                95: "storm", 96: "storm", 99: "storm",
+            }
+            condition = condition_names.get(weather_code, "")
+
+            # Display weather on screen
+            temp_int = int(temp) if isinstance(temp, (int, float)) else temp
+            display_text = f"{weather_emoji}\n{temp_int}°F\n{city_name}"
+            log(f"Displaying weather: {display_text}")
+
+            if face_renderer:
+                face_renderer.set_text(display_text, font_size="xlarge", color="#FFFFFF")
+                # Auto-clear after 8 seconds
+                async def auto_clear():
+                    await asyncio.sleep(8)
+                    if face_renderer:
+                        face_renderer.clear_text()
+                asyncio.create_task(auto_clear())
+
+            # Return spoken result
+            spoken = f"It's {temp_int} degrees in {city_name}, {condition}."
+            log(f"Weather spoken result: {spoken}")
+            await params.result_callback(spoken)
 
     except Exception as e:
         log(f"Weather API error: {e}")
@@ -1483,22 +1508,6 @@ async def take_photo(params):
     return {"status": "error", "message": "No camera frame available"}
 
 
-async def stay_quiet(params: FunctionCallParams):
-    """Stay quiet - respond with only a facial expression, no speech."""
-    global face_renderer
-    emotion = params.arguments.get("emotion", "neutral").lower()
-    log(f"Staying quiet with emotion: {emotion}")
-
-    if emotion not in VALID_EMOTIONS:
-        emotion = "neutral"
-
-    if face_renderer:
-        face_renderer.set_emotion(emotion)
-
-    # Return empty string to suppress TTS - no speech output
-    await params.result_callback("")
-
-
 # Tool schemas
 weather_tool = FunctionSchema(
     name="get_weather",
@@ -1597,18 +1606,9 @@ photo_tool = FunctionSchema(
     required=[],
 )
 
-stay_quiet_tool = FunctionSchema(
-    name="stay_quiet",
-    description="Stay quiet with just a facial expression, no speech. Use when user is talking to themselves.",
-    properties={
-        "emotion": {"type": "string", "enum": VALID_EMOTIONS},
-    },
-    required=["emotion"],
-)
-
 tools = ToolsSchema(standard_tools=[
     weather_tool, search_tool, emotion_tool, time_tool, draw_tool, clear_draw_tool,
-    display_text_tool, clear_text_tool, photo_tool, stay_quiet_tool
+    display_text_tool, clear_text_tool, photo_tool
 ])
 
 
@@ -1715,22 +1715,12 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("display_text", display_text)
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("take_photo", take_photo)
-    llm.register_function("stay_quiet", stay_quiet)
 
-    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences.
+    messages = [{"role": "system", "content": """You are Luna, a friendly voice assistant. Keep responses to 1-2 sentences. Always respond to the user - never stay silent.
 
-ABSOLUTE RULE: When a tool returns data, you MUST speak that data out loud immediately. No exceptions.
+When a tool returns data, speak that data to the user. The weather tool already shows info on screen, so just say the temperature and conditions briefly.
 
-For get_weather and web_search:
-1. Call the tool (no text before)
-2. When you receive the result, SAY IT OUT LOUD to the user
-3. Example: Tool returns "47 degrees with rain" → You say "It's 47 degrees with rain!"
-
-NEVER use stay_quiet after get_weather or web_search - always speak the result!
-
-Tools: get_weather, web_search, draw_pixel_art, display_text, take_photo, set_emotion, get_current_time, stay_quiet
-
-Only use stay_quiet when user is clearly talking to someone else or mumbling to themselves - NOT after information requests."""}]
+Tools: get_weather (shows on screen + returns spoken text), web_search, draw_pixel_art, display_text, take_photo, set_emotion, get_current_time"""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
