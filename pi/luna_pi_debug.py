@@ -32,7 +32,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 import threading
 
-# Optional: OpenCV and MediaPipe for camera
+# Optional: OpenCV for camera
 try:
     import cv2
     CV2_AVAILABLE = True
@@ -40,12 +40,23 @@ except ImportError:
     CV2_AVAILABLE = False
     logger.warning("OpenCV not available - camera disabled")
 
+# Optional: MediaPipe for detection (may not be available on Pi)
 try:
     import mediapipe as mp
     MP_AVAILABLE = True
 except ImportError:
     MP_AVAILABLE = False
-    logger.warning("MediaPipe not available - detection disabled")
+    logger.info("MediaPipe not available - using OpenCV cascade detection")
+
+# OpenCV Haar cascade for face detection (fallback when no MediaPipe)
+HAAR_FACE_CASCADE = None
+if CV2_AVAILABLE and not MP_AVAILABLE:
+    try:
+        cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+        HAAR_FACE_CASCADE = cv2.CascadeClassifier(cascade_path)
+        logger.info("Using OpenCV Haar cascade for face detection")
+    except Exception as e:
+        logger.warning(f"Could not load Haar cascade: {e}")
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -167,21 +178,20 @@ class CameraCapture:
                     time.sleep(0.1)
                     continue
 
-                # Convert BGR to RGB
+                # Convert BGR to RGB for detection
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 face_detected = False
                 hand_detected = False
 
                 if MP_AVAILABLE and self.face_detection and self.hand_detection:
-                    # Run face detection
+                    # Use MediaPipe for detection
                     face_results = self.face_detection.process(rgb_frame)
                     if face_results.detections:
                         face_detected = True
                         for detection in face_results.detections:
                             self.mp_draw.draw_detection(frame, detection)
 
-                    # Run hand detection
                     hand_results = self.hand_detection.process(rgb_frame)
                     if hand_results.multi_hand_landmarks:
                         hand_detected = True
@@ -189,6 +199,21 @@ class CameraCapture:
                             self.mp_draw.draw_landmarks(
                                 frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
                             )
+
+                elif HAAR_FACE_CASCADE is not None:
+                    # Fallback: Use OpenCV Haar cascade for face detection
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    faces = HAAR_FACE_CASCADE.detectMultiScale(
+                        gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+                    )
+                    if len(faces) > 0:
+                        face_detected = True
+                        for (x, y, w, h) in faces:
+                            # Draw green rectangle around face
+                            cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                            # Draw label
+                            cv2.putText(frame, "Face", (x, y-10),
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
                 debug_state["face_detected"] = face_detected
                 debug_state["hand_detected"] = hand_detected
