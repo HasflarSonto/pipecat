@@ -153,8 +153,9 @@ class TouchPetting:
         self.stroke_start_time = None
 
         # Petting detection parameters
-        self.MIN_Y_MOVEMENT = 200  # Raw units to count as movement
-        self.PET_THRESHOLD = 3  # Direction changes needed to trigger pet
+        # Raw touch coordinates are 0-4095, so 300 is about 7% of screen
+        self.MIN_Y_MOVEMENT = 300  # Raw units to count as a stroke
+        self.PET_THRESHOLD = 2  # Direction changes needed (down-up-down = 2 changes)
         self.PET_TIMEOUT = 1.5  # Seconds - reset if no movement
         self.HAPPY_DURATION = 2.0  # How long to stay happy after petting
 
@@ -210,6 +211,7 @@ class TouchPetting:
         """Background thread for touch event processing."""
         ry = 0
         event_count = 0
+        stroke_anchor_y = None  # The Y position where current stroke started
 
         log("Touch loop started, waiting for events...")
 
@@ -221,28 +223,37 @@ class TouchPetting:
             if event_count == 1:
                 log("First touch event received!")
 
-            # Track Y coordinate
+            # Track Y coordinate changes while touching
             if event.type == ecodes.EV_ABS and event.code == ecodes.ABS_Y:
-                ry = event.value
+                new_ry = event.value
 
-                if self.touching and self.last_y is not None:
-                    # Check for direction change
-                    y_diff = ry - self.last_y
+                if self.touching:
+                    # Calculate movement from stroke anchor
+                    if stroke_anchor_y is not None:
+                        y_diff = new_ry - stroke_anchor_y
 
-                    if abs(y_diff) > self.MIN_Y_MOVEMENT:
-                        new_direction = 'down' if y_diff > 0 else 'up'
+                        if abs(y_diff) > self.MIN_Y_MOVEMENT:
+                            new_direction = 'down' if y_diff > 0 else 'up'
 
-                        if self.last_direction and new_direction != self.last_direction:
-                            # Direction changed! Count it
-                            self.direction_changes += 1
-                            log(f"Direction change #{self.direction_changes}: {self.last_direction} -> {new_direction}")
+                            # First direction or direction change?
+                            if self.last_direction is None:
+                                self.last_direction = new_direction
+                                log(f"Stroke started: {new_direction} (Y: {stroke_anchor_y} -> {new_ry})")
+                            elif new_direction != self.last_direction:
+                                # Direction changed! Count it
+                                self.direction_changes += 1
+                                log(f"Direction change #{self.direction_changes}: {self.last_direction} -> {new_direction}")
 
-                            if self.direction_changes >= self.PET_THRESHOLD:
-                                self._trigger_pet()
-                                self.direction_changes = 0
+                                if self.direction_changes >= self.PET_THRESHOLD:
+                                    self._trigger_pet()
+                                    self.direction_changes = 0
 
-                        self.last_direction = new_direction
-                        self.last_y = ry
+                                self.last_direction = new_direction
+
+                            # Update anchor for next stroke detection
+                            stroke_anchor_y = new_ry
+
+                ry = new_ry
 
             # Track touch state
             elif event.type == ecodes.EV_KEY and event.code == ecodes.BTN_TOUCH:
@@ -252,7 +263,7 @@ class TouchPetting:
                 if self.touching and not was_touching:
                     # Touch started
                     log(f"Touch DOWN at Y={ry}")
-                    self.last_y = ry
+                    stroke_anchor_y = ry
                     self.direction_changes = 0
                     self.last_direction = None
                     self.stroke_start_time = time.time()
@@ -260,8 +271,8 @@ class TouchPetting:
 
                 elif not self.touching and was_touching:
                     # Touch ended
-                    log(f"Touch UP at Y={ry}")
-                    self.last_y = None
+                    log(f"Touch UP at Y={ry}, direction changes: {self.direction_changes}")
+                    stroke_anchor_y = None
                     self.direction_changes = 0
                     self.last_direction = None
                     debug_state["being_petted"] = False
