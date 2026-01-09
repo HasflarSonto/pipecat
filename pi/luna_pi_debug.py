@@ -72,8 +72,10 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame,
     OutputAudioRawFrame, StartFrame, EndFrame, TranscriptionFrame,
-    TextFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+    TextFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame
 )
+from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteConfig, STTMuteStrategy
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -1381,27 +1383,29 @@ async def web_search(params: FunctionCallParams):
         await params.result_callback("I had trouble searching. Please try again.")
 
 
-async def set_emotion(params):
-    """Set Luna's facial expression.
+async def set_emotion(params: FunctionCallParams):
+    """Set Luna's facial expression silently.
 
     Args:
         params: FunctionCallParams with arguments={'emotion': str}
     """
     global face_renderer
-    # Extract emotion from params (pipecat passes FunctionCallParams object)
-    emotion = params.arguments.get("emotion") if hasattr(params, 'arguments') else params
+    emotion = params.arguments.get("emotion", "neutral")
 
-    log(f"set_emotion called with: {emotion}, face_renderer={face_renderer is not None}")
+    log(f"set_emotion called with: {emotion}")
     if emotion not in VALID_EMOTIONS:
         log(f"Invalid emotion: {emotion}")
-        return {"status": "error", "message": f"Invalid emotion: {emotion}"}
+        await params.result_callback("")  # Silent - no spoken output
+        return
+
     if face_renderer:
         face_renderer.set_emotion(emotion)
         log(f"Emotion set to: {emotion}")
     else:
         log("WARNING: face_renderer is None!")
-    # Return message that reminds LLM to speak
-    return {"status": "success", "emotion": emotion, "reminder": "Now speak your response out loud to the user."}
+
+    # Return empty string via callback - this prevents LLM from speaking about the emotion
+    await params.result_callback("")
 
 async def get_current_time(params):
     """Get the current time."""
@@ -1748,9 +1752,16 @@ Tools: get_weather (shows on screen + returns spoken text), web_search, draw_pix
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
 
+    # Mute STT while Luna is speaking to prevent echo/feedback
+    stt_mute_filter = STTMuteFilter(config=STTMuteConfig(
+        strategies={STTMuteStrategy.ALWAYS}  # Mute mic whenever bot is speaking
+    ))
+    log("STT mute filter enabled - prevents echo")
+
     pipeline = Pipeline([
         audio_input,
         vad,  # VAD must be before STT to generate speaking/stopped frames
+        stt_mute_filter,  # Mute STT while Luna speaks to prevent echo
         stt,
         debug_monitor,  # Monitor VAD frames + transcriptions (all pass through)
         context_aggregator.user(),
