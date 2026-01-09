@@ -35,7 +35,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame,
     OutputAudioRawFrame, StartFrame, EndFrame, TranscriptionFrame,
-    TextFrame
+    TextFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -58,6 +58,7 @@ debug_state = {
     "status": "initializing",
     "mic_level": 0,
     "speaker_active": False,
+    "vad_speaking": False,  # VAD detected speech
     "last_transcription": "",
     "last_response": "",
     "frame_count": 0,
@@ -118,6 +119,7 @@ async def index():
             <h2>Audio</h2>
             <p><span class="label">Mic Level:</span></p>
             <div class="meter"><div class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
+            <p><span class="label">VAD:</span> <span class="value" style="color: {'#4ade80' if debug_state['vad_speaking'] else '#888'}">{'🎤 SPEAKING' if debug_state['vad_speaking'] else '⏸️ Waiting...'}</span></p>
             <p><span class="label">Speaker:</span> <span class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
         </div>
 
@@ -421,7 +423,15 @@ class DebugMonitor(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame):
+        if isinstance(frame, VADUserStartedSpeakingFrame):
+            debug_state["vad_speaking"] = True
+            log("VAD: Speech started")
+
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            debug_state["vad_speaking"] = False
+            log("VAD: Speech stopped")
+
+        elif isinstance(frame, TranscriptionFrame):
             debug_state["last_transcription"] = frame.text
             log(f"Heard: {frame.text}")
 
@@ -517,9 +527,10 @@ Keep responses SHORT - 1-2 sentences max. Use set_emotion to change your face ex
 
     pipeline = Pipeline([
         audio_input,
-        context_aggregator.user(),
+        vad,  # VAD must be before STT to generate speaking/stopped frames
         stt,
-        debug_monitor,
+        debug_monitor,  # Monitor VAD frames + transcriptions (all pass through)
+        context_aggregator.user(),
         llm,
         tts,
         face_renderer,

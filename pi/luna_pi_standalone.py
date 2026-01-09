@@ -527,10 +527,12 @@ Be helpful but brief. Your name is Luna."""
     context_aggregator = LLMContextAggregatorPair(context)
 
     # Build pipeline
+    # VAD must be before STT - SegmentedSTTService needs VAD frames to trigger transcription
     pipeline = Pipeline([
         audio_input,                    # Mic → audio frames
+        vad,                            # Detect speech start/stop
+        stt,                            # Speech → text (needs VAD frames)
         context_aggregator.user(),      # Aggregate user speech
-        stt,                            # Speech → text
         llm,                            # Text → response
         tts,                            # Response → speech
         face_renderer,                  # Generate face video
