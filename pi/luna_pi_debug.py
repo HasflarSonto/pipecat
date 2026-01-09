@@ -232,13 +232,27 @@ class CameraCapture:
         return None, None
 
     def _capture_loop(self):
-        """Background thread for camera capture."""
+        """Background thread for camera capture.
+
+        Runs detection every DETECTION_INTERVAL seconds to save CPU,
+        but streams frames more frequently for smooth video.
+        """
+        DETECTION_INTERVAL = 1.0  # Run face detection every 1 second
+        FRAME_INTERVAL = 0.2  # Stream frames every 200ms (~5 FPS for video)
+        last_detection_time = 0
+
+        # Cache last detection results for drawing between detections
+        cached_faces = []
+
         while self.running:
             try:
                 frame_rgb, frame_bgr = self._capture_frame()
                 if frame_rgb is None:
                     time.sleep(0.1)
                     continue
+
+                current_time = time.time()
+                run_detection = (current_time - last_detection_time) >= DETECTION_INTERVAL
 
                 face_detected = False
                 hand_detected = False
@@ -247,8 +261,9 @@ class CameraCapture:
                 # If no OpenCV, we'll convert RGB to JPEG directly via PIL
                 draw_frame = frame_bgr if frame_bgr is not None else frame_rgb
 
-                if MP_AVAILABLE and self.face_detection and self.hand_detection and frame_bgr is not None:
+                if MP_AVAILABLE and self.face_detection and self.hand_detection and frame_bgr is not None and run_detection:
                     # Use MediaPipe for detection (needs RGB input)
+                    last_detection_time = current_time
                     face_results = self.face_detection.process(frame_rgb)
                     if face_results.detections:
                         face_detected = True
@@ -264,12 +279,16 @@ class CameraCapture:
                             )
                     draw_frame = frame_bgr
 
-                elif HAAR_FACE_CASCADE is not None and frame_bgr is not None:
+                elif HAAR_FACE_CASCADE is not None and frame_bgr is not None and run_detection:
                     # Fallback: Use OpenCV Haar cascade for face detection
+                    last_detection_time = current_time
                     gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
                     faces = HAAR_FACE_CASCADE.detectMultiScale(
                         gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
                     )
+                    # Cache faces for drawing between detections
+                    cached_faces = list(faces) if len(faces) > 0 else []
+
                     if len(faces) > 0:
                         face_detected = True
                         # Use the largest face for gaze tracking
@@ -288,14 +307,6 @@ class CameraCapture:
                         # Send to face renderer if available
                         if self.face_renderer:
                             self.face_renderer.set_gaze(face_center_x, face_center_y)
-
-                        # Draw all detected faces
-                        for (fx, fy, fw, fh) in faces:
-                            # Draw green rectangle around face
-                            cv2.rectangle(frame_bgr, (fx, fy), (fx+fw, fy+fh), (0, 255, 0), 2)
-                            # Draw label
-                            cv2.putText(frame_bgr, "Face", (fx, fy-10),
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     else:
                         # No face detected - reset gaze to center
                         debug_state["gaze_x"] = 0.5
@@ -303,6 +314,13 @@ class CameraCapture:
                         if self.face_renderer:
                             self.face_renderer.set_gaze(0.5, 0.5)
 
+                # Draw cached faces on frame (even between detections)
+                if HAAR_FACE_CASCADE is not None and frame_bgr is not None and cached_faces:
+                    face_detected = True
+                    for (fx, fy, fw, fh) in cached_faces:
+                        cv2.rectangle(frame_bgr, (fx, fy), (fx+fw, fy+fh), (0, 255, 0), 2)
+                        cv2.putText(frame_bgr, "Face", (fx, fy-10),
+                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
                     draw_frame = frame_bgr
 
                 debug_state["face_detected"] = face_detected
@@ -319,7 +337,7 @@ class CameraCapture:
                     img.save(jpeg_buffer, format='JPEG', quality=80)
                     debug_state["last_camera_jpeg"] = jpeg_buffer.getvalue()
 
-                time.sleep(0.067)  # ~15 FPS
+                time.sleep(FRAME_INTERVAL)  # Stream at ~5 FPS, detect every 1s
 
             except Exception as e:
                 debug_state["errors"].append(f"Camera capture: {e}")
