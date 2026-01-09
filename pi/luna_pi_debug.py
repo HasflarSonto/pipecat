@@ -977,29 +977,27 @@ class PyAudioInput(FrameProcessor):
 
 
 def find_speaker_device():
-    """Auto-detect USB speaker device by testing common card numbers."""
-    import subprocess
+    """Auto-detect USB speaker device by checking /proc/asound."""
+    # Check which cards exist and look for USB audio
+    for card in [3, 4, 2, 1, 0]:
+        card_path = f"/proc/asound/card{card}"
+        if os.path.exists(card_path):
+            # Check if it's a USB device (look for "usb" in the card name)
+            try:
+                with open(f"{card_path}/id", 'r') as f:
+                    card_id = f.read().strip().lower()
+                log(f"Card {card}: {card_id}")
+                if 'usb' in card_id or 'audio' in card_id:
+                    device = f"plughw:{card},0"
+                    log(f"Found USB speaker at {device}")
+                    return device
+            except Exception:
+                pass
 
-    # Try cards 3, 4, 2, 0 (common USB speaker locations)
-    for card in [3, 4, 2, 0]:
-        device = f"plughw:{card},0"
-        try:
-            # Check if the card exists by looking at /proc/asound
-            card_path = f"/proc/asound/card{card}"
-            if not os.path.exists(card_path):
-                continue
-
-            # Try a quick silent play test
-            result = subprocess.run(
-                ['aplay', '-D', device, '-d', '0', '-q', '/dev/zero'],
-                capture_output=True, text=True, timeout=2
-            )
-            if result.returncode == 0 or "audio open error" not in result.stderr:
-                log(f"Found speaker at {device}")
-                return device
-        except Exception as e:
-            log(f"Error testing {device}: {e}")
-            continue
+    # Default to card 3 (common USB location) if it exists
+    if os.path.exists("/proc/asound/card3"):
+        log("Defaulting to plughw:3,0")
+        return "plughw:3,0"
 
     log("No USB speaker found, defaulting to plughw:0,0")
     return "plughw:0,0"
