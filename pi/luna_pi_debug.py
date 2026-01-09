@@ -83,6 +83,7 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.services.anthropic.llm import AnthropicLLMService
 from pipecat.services.openai.stt import OpenAISTTService
 from pipecat.services.openai.tts import OpenAITTSService
+from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
@@ -289,13 +290,13 @@ class TouchPetting:
         print(f"\n{'='*40}\n🐱 PET DETECTED! Count: {debug_state['pet_count']}\n{'='*40}\n")
 
         if self.face_renderer:
-            # Save current emotion if not already happy
+            # Save current emotion if not already cat/happy
             current = getattr(self.face_renderer, '_emotion', 'neutral')
-            if current not in ['happy', 'excited']:
+            if current not in ['cat', 'happy', 'excited']:
                 self.original_emotion = current
 
-            # Show happy emotion
-            self.face_renderer.set_emotion("happy")
+            # Show cat face when petted!
+            self.face_renderer.set_emotion("cat")
 
             # Make face bounce up and down
             def bounce_face():
@@ -1380,7 +1381,7 @@ async def take_photo(params):
     return {"status": "error", "message": "No camera frame available"}
 
 
-async def stay_quiet(params):
+async def stay_quiet(params: FunctionCallParams):
     """Stay quiet - respond with only a facial expression, no speech."""
     global face_renderer
     emotion = params.arguments.get("emotion", "neutral").lower()
@@ -1391,7 +1392,9 @@ async def stay_quiet(params):
 
     if face_renderer:
         face_renderer.set_emotion(emotion)
-    return {"status": "quiet", "emotion": emotion}
+
+    # Return empty string to suppress TTS - no speech output
+    await params.result_callback("")
 
 
 # Tool schemas
