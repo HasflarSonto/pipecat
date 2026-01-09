@@ -415,6 +415,53 @@ class PyAudioOutput(FrameProcessor):
         log("Speaker stopped")
 
 
+# ============== VAD PROCESSOR ==============
+
+class VADProcessor(FrameProcessor):
+    """Wraps VADAnalyzer to emit VAD frames in the pipeline.
+
+    The SileroVADAnalyzer is not a FrameProcessor - it's normally used by
+    the transport. This processor wraps it for standalone use.
+    """
+
+    def __init__(self, vad_analyzer: "SileroVADAnalyzer", sample_rate: int = 16000):
+        super().__init__()
+        self._vad = vad_analyzer
+        self._sample_rate = sample_rate
+        self._vad_state = None
+        self._initialized = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            # Initialize VAD with sample rate
+            self._vad.set_sample_rate(self._sample_rate)
+            self._initialized = True
+            log(f"VAD initialized at {self._sample_rate}Hz")
+            await self.push_frame(frame, direction)
+
+        elif isinstance(frame, InputAudioRawFrame):
+            if self._initialized:
+                # Run VAD analysis
+                from pipecat.audio.vad.vad_analyzer import VADState
+                new_state = await self._vad.analyze_audio(frame.audio)
+
+                # Emit VAD frames on state transitions
+                if new_state != self._vad_state:
+                    if new_state == VADState.SPEAKING and self._vad_state != VADState.STARTING:
+                        await self.push_frame(VADUserStartedSpeakingFrame())
+                    elif new_state == VADState.QUIET and self._vad_state == VADState.STOPPING:
+                        await self.push_frame(VADUserStoppedSpeakingFrame())
+                    self._vad_state = new_state
+
+            # Always pass audio through
+            await self.push_frame(frame, direction)
+
+        else:
+            await self.push_frame(frame, direction)
+
+
 # ============== DEBUG MONITOR ==============
 
 class DebugMonitor(FrameProcessor):
@@ -508,7 +555,8 @@ async def run_luna(display_device: str = "/dev/fb0"):
     face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
     log("Face renderer created")
 
-    vad = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
+    vad_analyzer = SileroVADAnalyzer(params=VADParams(stop_secs=0.5, min_volume=0.6))
+    vad = VADProcessor(vad_analyzer, sample_rate=16000)  # Wrap VAD for pipeline use
     log("VAD loaded")
 
     stt = OpenAISTTService(api_key=os.getenv("OPENAI_API_KEY"), model="whisper-1")

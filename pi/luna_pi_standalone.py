@@ -35,7 +35,11 @@ from PIL import Image
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame, OutputAudioRawFrame, StartFrame, EndFrame
+from pipecat.frames.frames import (
+    Frame, OutputImageRawFrame, AudioRawFrame, InputAudioRawFrame,
+    OutputAudioRawFrame, StartFrame, EndFrame,
+    VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -374,6 +378,56 @@ class PyAudioOutput(FrameProcessor):
         logger.info("Speaker stopped")
 
 
+# ============== VAD PROCESSOR ==============
+
+class VADProcessor(FrameProcessor):
+    """Wraps VADAnalyzer to emit VAD frames in the pipeline.
+
+    The SileroVADAnalyzer is not a FrameProcessor - it's normally used by
+    the transport. This processor wraps it for standalone use.
+    """
+
+    def __init__(self, vad_analyzer: SileroVADAnalyzer, sample_rate: int = 16000):
+        super().__init__()
+        self._vad = vad_analyzer
+        self._sample_rate = sample_rate
+        self._vad_state = None
+        self._initialized = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, StartFrame):
+            # Initialize VAD with sample rate
+            from pipecat.audio.vad.vad_analyzer import VADState
+            self._vad.set_sample_rate(self._sample_rate)
+            self._initialized = True
+            logger.info(f"VAD initialized at {self._sample_rate}Hz")
+            await self.push_frame(frame, direction)
+
+        elif isinstance(frame, InputAudioRawFrame):
+            if self._initialized:
+                # Run VAD analysis
+                from pipecat.audio.vad.vad_analyzer import VADState
+                new_state = await self._vad.analyze_audio(frame.audio)
+
+                # Emit VAD frames on state transitions
+                if new_state != self._vad_state:
+                    if new_state == VADState.SPEAKING and self._vad_state != VADState.STARTING:
+                        await self.push_frame(VADUserStartedSpeakingFrame())
+                        logger.debug("VAD: User started speaking")
+                    elif new_state == VADState.QUIET and self._vad_state == VADState.STOPPING:
+                        await self.push_frame(VADUserStoppedSpeakingFrame())
+                        logger.debug("VAD: User stopped speaking")
+                    self._vad_state = new_state
+
+            # Always pass audio through
+            await self.push_frame(frame, direction)
+
+        else:
+            await self.push_frame(frame, direction)
+
+
 # ============== TOOLS ==============
 
 VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"]
@@ -466,11 +520,12 @@ async def run_luna(display_device: str = "/dev/fb0", input_device: int = None):
     # Face renderer (240x320 portrait, 15 FPS)
     face_renderer = LunaFaceRenderer(width=240, height=320, fps=15)
 
-    # VAD for detecting speech
-    vad = SileroVADAnalyzer(params=VADParams(
+    # VAD for detecting speech (wrapped in processor for pipeline use)
+    vad_analyzer = SileroVADAnalyzer(params=VADParams(
         stop_secs=0.5,
         min_volume=0.6,
     ))
+    vad = VADProcessor(vad_analyzer, sample_rate=16000)
 
     # STT: OpenAI Whisper
     stt = OpenAISTTService(
