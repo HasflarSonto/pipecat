@@ -760,26 +760,13 @@
                     handleRTVIMessage(JSON.parse(event.data));
                 };
 
-                // 6. Create offer
+                // 6. Create offer and send immediately (trickle ICE)
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
 
-                // Wait for ICE gathering
-                await new Promise((resolve) => {
-                    if (peerConnection.iceGatheringState === 'complete') {
-                        resolve();
-                    } else {
-                        peerConnection.addEventListener('icegatheringstatechange', () => {
-                            if (peerConnection.iceGatheringState === 'complete') {
-                                resolve();
-                            }
-                        });
-                    }
-                });
-
                 setStatus('Connecting to Luna...', '');
 
-                // 7. Send offer to server
+                // 7. Send offer to server immediately (don't wait for ICE gathering)
                 const offerResponse = await fetch(`/sessions/${sessionId}/api/offer`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -795,6 +782,25 @@
                     type: 'answer',
                     sdp: answerData.sdp
                 }));
+
+                // 9. Trickle ICE candidates to server as they're discovered
+                peerConnection.onicecandidate = async (event) => {
+                    if (event.candidate) {
+                        try {
+                            await fetch(`/sessions/${sessionId}/api/offer`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    candidate: event.candidate.candidate,
+                                    sdpMid: event.candidate.sdpMid,
+                                    sdpMLineIndex: event.candidate.sdpMLineIndex
+                                })
+                            });
+                        } catch (e) {
+                            console.warn('Failed to send ICE candidate:', e);
+                        }
+                    }
+                };
 
                 isConnected = true;
                 setStatus('Connected to Luna!', 'connected');
