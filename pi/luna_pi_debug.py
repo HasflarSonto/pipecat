@@ -932,11 +932,15 @@ face_renderer = None
 
 async def set_emotion(emotion: str):
     global face_renderer
+    log(f"set_emotion called with: {emotion}, face_renderer={face_renderer is not None}")
     if emotion not in VALID_EMOTIONS:
+        log(f"Invalid emotion: {emotion}")
         return {"status": "error", "message": f"Invalid emotion"}
     if face_renderer:
         face_renderer.set_emotion(emotion)
-        log(f"Emotion: {emotion}")
+        log(f"Emotion set to: {emotion}")
+    else:
+        log("WARNING: face_renderer is None!")
     return {"status": "success", "emotion": emotion}
 
 async def get_current_time(timezone: str = None):
