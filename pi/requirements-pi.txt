@@ -24,8 +24,10 @@ pytz>=2024.1
 # VAD
 onnxruntime>=1.16.0
 
-# Optional: Camera support
-# picamera2>=0.3.12  # Uncomment for Pi Camera
+# Optional: Camera support with face/hand detection
+# opencv-python>=4.8.0  # Uncomment for camera
+# mediapipe>=0.10.0     # Uncomment for detection (may need mediapipe-rpi4 on Pi)
+# picamera2>=0.3.12     # Uncomment for Pi Camera module
 
 # Optional: WebRTC client mode (connects to remote server)
 # aiortc>=1.9.0

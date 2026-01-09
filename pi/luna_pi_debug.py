@@ -7,6 +7,7 @@ Runs Luna with a web interface at http://PI_IP:7860 showing:
 - Audio levels
 - Transcriptions
 - Pipeline state
+- Live camera with face/hand detection
 """
 
 import argparse
@@ -24,12 +25,27 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import numpy as np
 from dotenv import load_dotenv
 from loguru import logger
-from PIL import Image
+from PIL import Image, ImageDraw
 import io
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 import threading
+
+# Optional: OpenCV and MediaPipe for camera
+try:
+    import cv2
+    CV2_AVAILABLE = True
+except ImportError:
+    CV2_AVAILABLE = False
+    logger.warning("OpenCV not available - camera disabled")
+
+try:
+    import mediapipe as mp
+    MP_AVAILABLE = True
+except ImportError:
+    MP_AVAILABLE = False
+    logger.warning("MediaPipe not available - detection disabled")
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -67,6 +83,10 @@ debug_state = {
     "logs": deque(maxlen=50),
     "started_at": None,
     "last_frame_jpeg": None,  # Latest face frame as JPEG bytes
+    "last_camera_jpeg": None,  # Latest camera frame with detection as JPEG
+    "camera_enabled": False,
+    "face_detected": False,
+    "hand_detected": False,
 }
 
 
@@ -77,12 +97,137 @@ def log(msg):
     logger.info(msg)
 
 
+# ============== CAMERA WITH DETECTION ==============
+
+class CameraCapture:
+    """Captures camera frames and runs face/hand detection."""
+
+    def __init__(self, camera_index: int = 0, width: int = 320, height: int = 240):
+        self.camera_index = camera_index
+        self.width = width
+        self.height = height
+        self.cap = None
+        self.running = False
+        self.thread = None
+
+        # MediaPipe detectors
+        self.face_detection = None
+        self.hand_detection = None
+
+        if MP_AVAILABLE:
+            self.mp_face = mp.solutions.face_detection
+            self.mp_hands = mp.solutions.hands
+            self.mp_draw = mp.solutions.drawing_utils
+
+    def start(self):
+        """Start camera capture in background thread."""
+        if not CV2_AVAILABLE:
+            log("Camera disabled - OpenCV not installed")
+            return False
+
+        try:
+            self.cap = cv2.VideoCapture(self.camera_index)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+            self.cap.set(cv2.CAP_PROP_FPS, 15)
+
+            if not self.cap.isOpened():
+                log(f"Failed to open camera {self.camera_index}")
+                return False
+
+            if MP_AVAILABLE:
+                self.face_detection = self.mp_face.FaceDetection(
+                    model_selection=0, min_detection_confidence=0.5
+                )
+                self.hand_detection = self.mp_hands.Hands(
+                    static_image_mode=False,
+                    max_num_hands=2,
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5
+                )
+
+            self.running = True
+            self.thread = threading.Thread(target=self._capture_loop, daemon=True)
+            self.thread.start()
+            debug_state["camera_enabled"] = True
+            log(f"Camera started (index {self.camera_index})")
+            return True
+
+        except Exception as e:
+            log(f"Camera error: {e}")
+            debug_state["errors"].append(f"Camera: {e}")
+            return False
+
+    def _capture_loop(self):
+        """Background thread for camera capture."""
+        while self.running:
+            try:
+                ret, frame = self.cap.read()
+                if not ret:
+                    time.sleep(0.1)
+                    continue
+
+                # Convert BGR to RGB
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+                face_detected = False
+                hand_detected = False
+
+                if MP_AVAILABLE and self.face_detection and self.hand_detection:
+                    # Run face detection
+                    face_results = self.face_detection.process(rgb_frame)
+                    if face_results.detections:
+                        face_detected = True
+                        for detection in face_results.detections:
+                            self.mp_draw.draw_detection(frame, detection)
+
+                    # Run hand detection
+                    hand_results = self.hand_detection.process(rgb_frame)
+                    if hand_results.multi_hand_landmarks:
+                        hand_detected = True
+                        for hand_landmarks in hand_results.multi_hand_landmarks:
+                            self.mp_draw.draw_landmarks(
+                                frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS
+                            )
+
+                debug_state["face_detected"] = face_detected
+                debug_state["hand_detected"] = hand_detected
+
+                # Encode as JPEG
+                _, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                debug_state["last_camera_jpeg"] = jpeg.tobytes()
+
+                time.sleep(0.067)  # ~15 FPS
+
+            except Exception as e:
+                debug_state["errors"].append(f"Camera capture: {e}")
+                time.sleep(0.5)
+
+    def stop(self):
+        """Stop camera capture."""
+        self.running = False
+        if self.thread:
+            self.thread.join(timeout=1)
+        if self.cap:
+            self.cap.release()
+        if self.face_detection:
+            self.face_detection.close()
+        if self.hand_detection:
+            self.hand_detection.close()
+        debug_state["camera_enabled"] = False
+        log("Camera stopped")
+
+
+# Global camera instance
+camera = None
+
+
 # ============== WEB SERVER ==============
 
 app = FastAPI()
 
 
-async def generate_mjpeg():
+async def generate_face_mjpeg():
     """Generate MJPEG stream from Luna's face frames."""
     while True:
         if debug_state["last_frame_jpeg"]:
@@ -95,11 +240,33 @@ async def generate_mjpeg():
         await asyncio.sleep(0.067)  # ~15 FPS
 
 
+async def generate_camera_mjpeg():
+    """Generate MJPEG stream from camera with detection overlay."""
+    while True:
+        if debug_state["last_camera_jpeg"]:
+            yield (
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n\r\n" +
+                debug_state["last_camera_jpeg"] +
+                b"\r\n"
+            )
+        await asyncio.sleep(0.067)  # ~15 FPS
+
+
 @app.get("/video")
 async def video_feed():
-    """MJPEG video stream endpoint."""
+    """MJPEG video stream for Luna's face."""
     return StreamingResponse(
-        generate_mjpeg(),
+        generate_face_mjpeg(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.get("/camera")
+async def camera_feed():
+    """MJPEG video stream for camera with face/hand detection."""
+    return StreamingResponse(
+        generate_camera_mjpeg(),
         media_type="multipart/x-mixed-replace; boundary=frame"
     )
 
@@ -112,6 +279,25 @@ async def index():
     uptime = ""
     if debug_state["started_at"]:
         uptime = f"{int(time.time() - debug_state['started_at'])}s"
+
+    camera_html = ""
+    if debug_state["camera_enabled"]:
+        camera_html = """
+            <div class="video-container">
+                <h2>Camera (Detection)</h2>
+                <img src="/camera" width="320" height="240" alt="Camera Feed">
+                <p><span id="detection-status" class="value"></span></p>
+            </div>
+        """
+    else:
+        camera_html = """
+            <div class="video-container" style="opacity: 0.5;">
+                <h2>Camera (Disabled)</h2>
+                <div style="width: 320px; height: 240px; background: #333; border-radius: 8px; display: flex; align-items: center; justify-content: center;">
+                    <span style="color: #888;">No camera</span>
+                </div>
+            </div>
+        """
 
     return f"""
     <!DOCTYPE html>
@@ -126,17 +312,16 @@ async def index():
             .box {{ background: #16213e; padding: 15px; margin: 10px 0; border-radius: 8px; }}
             .label {{ color: #888; }}
             .value {{ color: #4ade80; font-size: 18px; }}
-            .logs {{ font-size: 12px; max-height: 300px; overflow-y: auto; }}
+            .logs {{ font-size: 12px; max-height: 200px; overflow-y: auto; }}
             h2 {{ color: #818cf8; margin-top: 0; }}
             .meter {{ width: 200px; height: 20px; background: #333; border-radius: 4px; overflow: hidden; }}
             .meter-fill {{ height: 100%; background: linear-gradient(90deg, #4ade80, #fbbf24); transition: width 0.2s; }}
-            .grid {{ display: grid; grid-template-columns: 280px 1fr; gap: 20px; }}
+            .video-row {{ display: flex; gap: 20px; flex-wrap: wrap; }}
             .video-container {{ text-align: center; }}
             .video-container img {{ border-radius: 8px; border: 2px solid #818cf8; }}
-            .right-panel {{ display: flex; flex-direction: column; gap: 10px; }}
+            .info-row {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 10px; }}
         </style>
         <script>
-            // Auto-refresh status every 2 seconds (but not the whole page - keeps video smooth)
             setInterval(async () => {{
                 const resp = await fetch('/status');
                 const data = await resp.json();
@@ -150,7 +335,16 @@ async def index():
                 document.getElementById('last-response').textContent = data.last_response || '(nothing yet)';
                 document.getElementById('frame-count').textContent = data.frame_count;
                 document.getElementById('logs').innerHTML = data.logs.join('<br>');
-            }}, 1000);
+                // Detection status
+                const det = document.getElementById('detection-status');
+                if (det) {{
+                    let status = [];
+                    if (data.face_detected) status.push('👤 Face');
+                    if (data.hand_detected) status.push('✋ Hand');
+                    det.textContent = status.length ? status.join(' | ') : 'No detection';
+                    det.style.color = status.length ? '#4ade80' : '#888';
+                }}
+            }}, 500);
         </script>
     </head>
     <body>
@@ -160,31 +354,32 @@ async def index():
             {debug_state['status']} {f"(uptime: {uptime})" if uptime else ''}
         </div>
 
-        <div class="grid">
+        <div class="video-row">
             <div class="video-container">
                 <h2>Luna's Face</h2>
                 <img src="/video" width="240" height="320" alt="Luna Face">
             </div>
+            {camera_html}
+        </div>
 
-            <div class="right-panel">
-                <div class="box">
-                    <h2>Audio</h2>
-                    <p><span class="label">Mic Level:</span></p>
-                    <div class="meter"><div id="mic-meter" class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
-                    <p><span class="label">VAD:</span> <span id="vad-status" class="value" style="color: {'#4ade80' if debug_state['vad_speaking'] else '#888'}">{'🎤 SPEAKING' if debug_state['vad_speaking'] else '⏸️ Waiting...'}</span></p>
-                    <p><span class="label">Speaker:</span> <span id="speaker-status" class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
-                </div>
+        <div class="info-row">
+            <div class="box">
+                <h2>Audio</h2>
+                <p><span class="label">Mic Level:</span></p>
+                <div class="meter"><div id="mic-meter" class="meter-fill" style="width: {min(debug_state['mic_level'] * 100, 100)}%"></div></div>
+                <p><span class="label">VAD:</span> <span id="vad-status" class="value" style="color: {'#4ade80' if debug_state['vad_speaking'] else '#888'}">{'🎤 SPEAKING' if debug_state['vad_speaking'] else '⏸️ Waiting...'}</span></p>
+                <p><span class="label">Speaker:</span> <span id="speaker-status" class="value">{'🔊 Playing' if debug_state['speaker_active'] else '🔇 Silent'}</span></p>
+            </div>
 
-                <div class="box">
-                    <h2>Conversation</h2>
-                    <p><span class="label">Last heard:</span> <span id="last-heard" class="value">{debug_state['last_transcription'] or '(nothing yet)'}</span></p>
-                    <p><span class="label">Last response:</span> <span id="last-response" class="value">{debug_state['last_response'] or '(nothing yet)'}</span></p>
-                </div>
+            <div class="box">
+                <h2>Conversation</h2>
+                <p><span class="label">Last heard:</span> <span id="last-heard" class="value">{debug_state['last_transcription'] or '(nothing yet)'}</span></p>
+                <p><span class="label">Last response:</span> <span id="last-response" class="value">{debug_state['last_response'] or '(nothing yet)'}</span></p>
+            </div>
 
-                <div class="box">
-                    <h2>Pipeline</h2>
-                    <p><span class="label">Video frames:</span> <span id="frame-count" class="value">{debug_state['frame_count']}</span></p>
-                </div>
+            <div class="box">
+                <h2>Pipeline</h2>
+                <p><span class="label">Video frames:</span> <span id="frame-count" class="value">{debug_state['frame_count']}</span></p>
             </div>
         </div>
 
@@ -213,6 +408,9 @@ async def get_status():
         "last_response": debug_state["last_response"],
         "frame_count": debug_state["frame_count"],
         "logs": list(debug_state["logs"])[-30:],
+        "camera_enabled": debug_state["camera_enabled"],
+        "face_detected": debug_state["face_detected"],
+        "hand_detected": debug_state["hand_detected"],
     }
 
 
@@ -694,8 +892,15 @@ async def run_web_server():
     await server.serve()
 
 
-async def main_async(display_device: str):
+async def main_async(display_device: str, camera_index: int = -1):
     """Run both web server and Luna concurrently."""
+    global camera
+
+    # Start camera if enabled
+    if camera_index >= 0:
+        camera = CameraCapture(camera_index=camera_index)
+        camera.start()
+
     # Start web server task
     web_task = asyncio.create_task(run_web_server())
     log("Web server starting on http://0.0.0.0:7860")
@@ -710,24 +915,29 @@ async def main_async(display_device: str):
         log(f"Luna error: {e}")
         debug_state["errors"].append(str(e))
     finally:
+        if camera:
+            camera.stop()
         web_task.cancel()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Luna Pi Debug")
-    parser.add_argument("--display", "-d", default="/dev/fb0")
+    parser.add_argument("--display", "-d", default="/dev/fb0", help="Framebuffer device")
+    parser.add_argument("--camera", "-c", type=int, default=-1, help="Camera index (e.g., 0 for /dev/video0)")
     parser.add_argument("--no-web", action="store_true", help="Disable web interface")
     args = parser.parse_args()
 
     import socket
     ip = socket.gethostbyname(socket.gethostname())
     print(f"\n🌐 Debug interface: http://{ip}:7860\n")
+    if args.camera >= 0:
+        print(f"📷 Camera enabled: /dev/video{args.camera}\n")
 
     try:
         if args.no_web:
             asyncio.run(run_luna(display_device=args.display))
         else:
-            asyncio.run(main_async(display_device=args.display))
+            asyncio.run(main_async(display_device=args.display, camera_index=args.camera))
     except KeyboardInterrupt:
         log("Shutting down...")
 
