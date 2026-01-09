@@ -1020,6 +1020,7 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
         import math
         import tempfile
         import wave
+        import os as os_module  # Use alias to avoid shadowing global os
 
         # Generate a short beep (1000Hz for 0.3 seconds) as WAV file
         sample_rate = 48000
@@ -1055,8 +1056,7 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
                 capture_output=True, text=True, timeout=5
             )
 
-        import os
-        os.unlink(temp_wav)
+        os_module.unlink(temp_wav)
 
         if result.returncode == 0:
             log("Speaker test: OK (beep played)")
