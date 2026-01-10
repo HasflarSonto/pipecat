@@ -1787,7 +1787,7 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
 
     stt = OpenAISTTService(api_key=os.getenv("OPENAI_API_KEY"), model="whisper-1")
     tts = OpenAITTSService(api_key=os.getenv("OPENAI_API_KEY"), voice="nova")
-    llm = AnthropicLLMService(api_key=os.getenv("ANTHROPIC_API_KEY"), model="claude-3-5-haiku-latest")
+    llm = AnthropicLLMService(api_key=os.getenv("ANTHROPIC_API_KEY"), model="claude-haiku-4-5-20251001")
     log("AI services created")
 
     llm.register_function("get_weather", get_weather)
@@ -1800,7 +1800,7 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("take_photo", take_photo)
 
-    messages = [{"role": "system", "content": """You are Luna, a small robot assistant with a screen for a face. You're a bit quirky and helpful, but please don't be cringe. Keep responses to 1-2 sentences MAX.
+    messages = [{"role": "system", "content": """You are Luna, a small robot assistant with a screen for a face. You're a bit , but helpful. Keep responses to 1-2 sentences MAX.
 
 CRITICAL: You MUST speak something after EVERY user message. Never be silent. Even after using tools, ALWAYS say something out loud.
 
