@@ -286,21 +286,25 @@ class LunaFaceRenderer(FrameProcessor):
         # Get font size
         font_size_px = self._font_sizes.get(self._text_font_size, 32)
 
-        # Try to load a rounded/robot-style font that matches Luna's aesthetic
+        # Try to load a font that supports emojis and text
         font = None
         try:
-            # Priority: rounded/modern fonts that match the robot aesthetic
+            # Priority: fonts with emoji support, then regular fonts
             preferred_fonts = [
-                # macOS rounded fonts
+                # Linux emoji fonts (install: sudo apt install fonts-noto-color-emoji)
+                "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+                "/usr/share/fonts/truetype/noto/NotoSansMono-Bold.ttf",
+                # Linux fonts with good Unicode support
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
+                "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+                # macOS fonts
+                "/System/Library/Fonts/Apple Color Emoji.ttc",
                 "/System/Library/Fonts/Supplemental/Arial Rounded MT Bold.ttf",
                 "/System/Library/Fonts/Avenir Next.ttc",
                 "/System/Library/Fonts/Helvetica.ttc",
-                "/System/Library/Fonts/SF-Pro-Rounded-Bold.otf",
-                # Linux fonts
-                "/usr/share/fonts/truetype/ubuntu/Ubuntu-Bold.ttf",
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-                # Fallback system fonts
-                "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
             ]
             for font_path in preferred_fonts:
                 try:

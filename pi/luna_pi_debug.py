@@ -478,16 +478,27 @@ class CameraCapture:
         DETECTION_INTERVAL = 1.0  # Run face detection every 1 second
         FRAME_INTERVAL = 0.2  # Stream frames every 200ms (~5 FPS for video)
         last_detection_time = 0
+        frame_count = 0
+        null_frame_count = 0
 
         # Cache last detection results for drawing between detections
         cached_faces = []
+
+        log("Camera capture loop started")
 
         while self.running:
             try:
                 frame_rgb, frame_bgr = self._capture_frame()
                 if frame_rgb is None:
+                    null_frame_count += 1
+                    if null_frame_count == 1 or null_frame_count % 50 == 0:
+                        log(f"Camera returning null frames (count: {null_frame_count})")
                     time.sleep(0.1)
                     continue
+
+                frame_count += 1
+                if frame_count == 1:
+                    log(f"First camera frame received: {frame_rgb.shape}")
 
                 current_time = time.time()
                 run_detection = (current_time - last_detection_time) >= DETECTION_INTERVAL
