@@ -484,7 +484,7 @@ class CameraCapture:
         # Cache last detection results for drawing between detections
         cached_faces = []
 
-        log("Camera capture loop started")
+        log(f"Camera capture loop started (picam={self.picam is not None}, cap={self.cap is not None})")
 
         while self.running:
             try:
@@ -499,6 +499,8 @@ class CameraCapture:
                 frame_count += 1
                 if frame_count == 1:
                     log(f"First camera frame received: {frame_rgb.shape}")
+                if frame_count % 100 == 0:
+                    log(f"Camera frames: {frame_count}, faces detected: {debug_state.get('face_detected', False)}")
 
                 current_time = time.time()
                 run_detection = (current_time - last_detection_time) >= DETECTION_INTERVAL
