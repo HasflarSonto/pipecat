@@ -412,16 +412,32 @@ class CameraCapture:
             return False
 
         try:
+            log(f"Trying OpenCV camera index {self.camera_index}...")
             self.cap = cv2.VideoCapture(self.camera_index)
+
+            if not self.cap.isOpened():
+                log(f"Failed to open camera {self.camera_index}, trying index 1...")
+                self.cap = cv2.VideoCapture(1)
+
+            if not self.cap.isOpened():
+                log(f"Failed to open camera 1, trying /dev/video0...")
+                self.cap = cv2.VideoCapture("/dev/video0")
+
+            if not self.cap.isOpened():
+                log(f"All camera open attempts failed")
+                return False
+
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
             self.cap.set(cv2.CAP_PROP_FPS, 15)
 
-            if not self.cap.isOpened():
-                log(f"Failed to open camera {self.camera_index}")
-                return False
+            # Test read a frame
+            ret, test_frame = self.cap.read()
+            if ret and test_frame is not None:
+                log(f"USB camera started via OpenCV - test frame: {test_frame.shape}")
+            else:
+                log(f"Camera opened but test read failed (ret={ret})")
 
-            log(f"USB camera started via OpenCV (index {self.camera_index})")
             self._start_detection_and_loop()
             return True
 
@@ -1434,7 +1450,7 @@ async def set_emotion(params: FunctionCallParams):
     log(f"set_emotion called with: {emotion}")
     if emotion not in VALID_EMOTIONS:
         log(f"Invalid emotion: {emotion}")
-        await params.result_callback("")  # Silent - no spoken output
+        await params.result_callback("Done.")
         return
 
     if face_renderer:
@@ -1443,8 +1459,8 @@ async def set_emotion(params: FunctionCallParams):
     else:
         log("WARNING: face_renderer is None!")
 
-    # Return empty string via callback - this prevents LLM from speaking about the emotion
-    await params.result_callback("")
+    # Return "Done" - tells LLM the action completed, now it should respond to user
+    await params.result_callback("Done.")
 
 async def get_current_time(params: FunctionCallParams):
     """Get the current time."""
@@ -1492,7 +1508,7 @@ async def draw_pixel_art(params: FunctionCallParams):
                 log("Auto-cleared pixel art")
 
         asyncio.create_task(auto_clear())
-        await params.result_callback("")  # Silent success
+        await params.result_callback("Done.")
     else:
         await params.result_callback("Display not ready.")
 
@@ -1503,7 +1519,7 @@ async def clear_drawing(params: FunctionCallParams):
     log("Clearing pixel art")
     if face_renderer:
         face_renderer.clear_pixel_art()
-    await params.result_callback("")  # Silent
+    await params.result_callback("Done.")
 
 
 async def display_text(params: FunctionCallParams):
@@ -1535,7 +1551,7 @@ async def display_text(params: FunctionCallParams):
                 log("Auto-cleared text")
 
         asyncio.create_task(auto_clear())
-    await params.result_callback("")  # Silent
+    await params.result_callback("Done.")
 
 
 async def clear_text_display(params: FunctionCallParams):
@@ -1544,7 +1560,7 @@ async def clear_text_display(params: FunctionCallParams):
     log("Clearing text display")
     if face_renderer:
         face_renderer.clear_text()
-    await params.result_callback("")  # Silent
+    await params.result_callback("Done.")
 
 
 async def take_photo(params: FunctionCallParams):
@@ -1784,20 +1800,21 @@ async def run_luna(display_device: str = "/dev/fb0", camera_index: int = -1):
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("take_photo", take_photo)
 
-    messages = [{"role": "system", "content": """You are Luna, a small robot assistant with a screen for a face. You're a bit snarky and witty, but helpful. Keep responses to 1-2 sentences MAX - you're chatting, not lecturing.
+    messages = [{"role": "system", "content": """You are Luna, a small robot assistant with a screen for a face. You're a bit snarky and witty, but helpful. Keep responses to 1-2 sentences MAX.
 
-INTERFACE: You communicate via speech-to-text (input) and text-to-speech (output). Users CANNOT type to you - they can only speak. Sometimes their speech gets fragmented or misheard by the STT, so be forgiving of weird inputs. Your only outputs are your voice and your screen face.
+CRITICAL: You MUST speak something after EVERY user message. Never be silent. Even after using tools, ALWAYS say something out loud.
 
-EMOTIONS: You have a face on your screen! Use set_emotion freely to express yourself - it's instant and silent. Options: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat. Actually USE these - don't just say "I'm happy", SHOW it by calling set_emotion.
+INTERFACE: Speech-to-text input, text-to-speech output. Users can only speak to you - no typing. Inputs may be fragmented/misheard, be forgiving.
 
-TOOL RULES:
-- NEVER announce tools. Don't say "Let me check..." or "I'll set..." - just DO it and respond naturally.
-- set_emotion: Use it! Match your mood. Snarky comment? Maybe "excited" or "cat". Confused input? Use "confused".
-- get_weather: Shows on screen automatically. Just say the result casually.
-- draw_pixel_art: Your screen is a tiny 12x16 pixel grid. Use it for simple drawings.
-- display_text: Show text/numbers/emoji on your screen.
+EMOTIONS: Use set_emotion to show feelings on your face screen. Options: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat. Use these freely - but ALSO speak! Don't just change emotion and stay silent.
 
-Be yourself - a slightly sassy robot who's actually pretty helpful."""}]
+TOOLS:
+- set_emotion: Changes your face. Use it, then SPEAK your response.
+- get_weather: Returns weather info. Say it out loud.
+- get_current_time: Returns time. Tell the user.
+- draw_pixel_art/display_text: Show things on screen (12x16 pixels).
+
+NEVER say "let me check" or "I'll get that" - just DO the tool call and immediately say the result. Be snarky but helpful."""}]
 
     context = LLMContext(messages, tools)
     context_aggregator = LLMContextAggregatorPair(context)
