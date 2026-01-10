@@ -988,6 +988,9 @@ class PyAudioInput(FrameProcessor):
 
                 # ECHO CANCELLATION: Don't send mic audio while speaker is playing
                 # This prevents Luna from hearing herself
+                # Note: This does block interruptions, but without hardware echo cancellation
+                # there's no good way to allow interruptions without feedback loops.
+                # For real interruption support, use WebRTC transport with echo cancellation.
                 if debug_state.get("speaker_active", False):
                     await asyncio.sleep(0.001)
                     continue
