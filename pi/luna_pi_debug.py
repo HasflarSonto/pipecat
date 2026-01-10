@@ -412,34 +412,38 @@ class CameraCapture:
             return False
 
         try:
-            log(f"Trying OpenCV camera index {self.camera_index}...")
-            self.cap = cv2.VideoCapture(self.camera_index)
+            # Try different camera backends
+            backends_to_try = [
+                (self.camera_index, cv2.CAP_V4L2, f"V4L2 index {self.camera_index}"),
+                (self.camera_index, cv2.CAP_ANY, f"ANY index {self.camera_index}"),
+                (0, cv2.CAP_V4L2, "V4L2 index 0"),
+                ("/dev/video0", cv2.CAP_V4L2, "/dev/video0 V4L2"),
+            ]
 
-            if not self.cap.isOpened():
-                log(f"Failed to open camera {self.camera_index}, trying index 1...")
-                self.cap = cv2.VideoCapture(1)
+            for cam_id, backend, desc in backends_to_try:
+                log(f"Trying camera: {desc}...")
+                self.cap = cv2.VideoCapture(cam_id, backend)
 
-            if not self.cap.isOpened():
-                log(f"Failed to open camera 1, trying /dev/video0...")
-                self.cap = cv2.VideoCapture("/dev/video0")
+                if self.cap.isOpened():
+                    self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
+                    self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
+                    self.cap.set(cv2.CAP_PROP_FPS, 15)
 
-            if not self.cap.isOpened():
-                log(f"All camera open attempts failed")
-                return False
+                    # Test read a frame
+                    ret, test_frame = self.cap.read()
+                    if ret and test_frame is not None:
+                        log(f"Camera working: {desc} - frame: {test_frame.shape}")
+                        self._start_detection_and_loop()
+                        return True
+                    else:
+                        log(f"Camera {desc} opened but read failed")
+                        self.cap.release()
+                else:
+                    log(f"Camera {desc} failed to open")
 
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            self.cap.set(cv2.CAP_PROP_FPS, 15)
-
-            # Test read a frame
-            ret, test_frame = self.cap.read()
-            if ret and test_frame is not None:
-                log(f"USB camera started via OpenCV - test frame: {test_frame.shape}")
-            else:
-                log(f"Camera opened but test read failed (ret={ret})")
-
-            self._start_detection_and_loop()
-            return True
+            log(f"All camera attempts failed")
+            debug_state["camera_enabled"] = False
+            return False
 
         except Exception as e:
             log(f"Camera error: {e}")
