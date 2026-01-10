@@ -1001,25 +1001,27 @@ class PyAudioInput(FrameProcessor):
 def find_speaker_device():
     """Auto-detect USB speaker device by checking /proc/asound."""
     # Check which cards exist and look for USB audio
-    for card in [3, 4, 2, 1, 0]:
+    # Check cards 4, 3, 2, 1, 0 in order (USB devices often on higher numbers)
+    for card in [4, 3, 2, 1, 0]:
         card_path = f"/proc/asound/card{card}"
         if os.path.exists(card_path):
-            # Check if it's a USB device (look for "usb" in the card name)
             try:
                 with open(f"{card_path}/id", 'r') as f:
                     card_id = f.read().strip().lower()
                 log(f"Card {card}: {card_id}")
-                if 'usb' in card_id or 'audio' in card_id:
+                # Match USB audio devices: usb, uac (USB Audio Class), audio, pnp
+                # Exclude HDMI (vc4hdmi) and built-in (headphones, bcm)
+                if any(x in card_id for x in ['usb', 'uac', 'pnp']) and 'hdmi' not in card_id:
                     device = f"plughw:{card},0"
                     log(f"Found USB speaker at {device}")
                     return device
             except Exception:
                 pass
 
-    # Default to card 3 (common USB location) if it exists
-    if os.path.exists("/proc/asound/card3"):
-        log("Defaulting to plughw:3,0")
-        return "plughw:3,0"
+    # Default to card 4 if it exists (common USB location on Pi)
+    if os.path.exists("/proc/asound/card4"):
+        log("Defaulting to plughw:4,0")
+        return "plughw:4,0"
 
     log("No USB speaker found, defaulting to plughw:0,0")
     return "plughw:0,0"
