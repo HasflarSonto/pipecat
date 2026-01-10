@@ -1428,14 +1428,16 @@ async def set_emotion(params: FunctionCallParams):
     # Return empty string via callback - this prevents LLM from speaking about the emotion
     await params.result_callback("")
 
-async def get_current_time(params):
+async def get_current_time(params: FunctionCallParams):
     """Get the current time."""
     from datetime import datetime
     now = datetime.now()
-    return {"time": now.strftime("%I:%M %p"), "date": now.strftime("%A, %B %d, %Y")}
+    time_str = now.strftime("%I:%M %p")
+    date_str = now.strftime("%A, %B %d")
+    await params.result_callback(f"It's {time_str} on {date_str}.")
 
 
-async def draw_pixel_art(params):
+async def draw_pixel_art(params: FunctionCallParams):
     """Draw pixel art on Luna's screen (12x16 grid)."""
     global face_renderer
     pixels = params.arguments.get("pixels", [])
@@ -1444,7 +1446,8 @@ async def draw_pixel_art(params):
     log(f"Drawing pixel art with {len(pixels)} pixels, bg={background}, duration={duration}s")
 
     if not pixels:
-        return {"status": "error", "message": "No pixels provided"}
+        await params.result_callback("I need some pixels to draw.")
+        return
 
     # Validate and clean up pixels
     valid_pixels = []
@@ -1456,7 +1459,8 @@ async def draw_pixel_art(params):
             valid_pixels.append({"x": int(x), "y": int(y), "color": str(color)})
 
     if not valid_pixels:
-        return {"status": "error", "message": "No valid pixels found"}
+        await params.result_callback("No valid pixels to draw.")
+        return
 
     if face_renderer:
         face_renderer.set_pixel_art(valid_pixels, background)
@@ -1470,21 +1474,21 @@ async def draw_pixel_art(params):
                 log("Auto-cleared pixel art")
 
         asyncio.create_task(auto_clear())
-        return {"status": "success", "pixels_drawn": len(valid_pixels)}
-    return {"status": "error", "message": "Face renderer not ready"}
+        await params.result_callback("")  # Silent success
+    else:
+        await params.result_callback("Display not ready.")
 
 
-async def clear_drawing(params):
+async def clear_drawing(params: FunctionCallParams):
     """Clear pixel art and return to normal face display."""
     global face_renderer
     log("Clearing pixel art")
     if face_renderer:
         face_renderer.clear_pixel_art()
-        return {"status": "success"}
-    return {"status": "error", "message": "Face renderer not ready"}
+    await params.result_callback("")  # Silent
 
 
-async def display_text(params):
+async def display_text(params: FunctionCallParams):
     """Display text on Luna's screen."""
     global face_renderer
     text = params.arguments.get("text", "")
@@ -1498,7 +1502,8 @@ async def display_text(params):
     log(f"Displaying text: '{text[:30]}...' size={font_size}")
 
     if not text:
-        return {"status": "error", "message": "No text provided"}
+        await params.result_callback("I need some text to display.")
+        return
 
     if face_renderer:
         face_renderer.set_text(text, font_size, color, background, align, valign)
@@ -1512,27 +1517,26 @@ async def display_text(params):
                 log("Auto-cleared text")
 
         asyncio.create_task(auto_clear())
-        return {"status": "success"}
-    return {"status": "error", "message": "Display not ready"}
+    await params.result_callback("")  # Silent
 
 
-async def clear_text_display(params):
+async def clear_text_display(params: FunctionCallParams):
     """Clear text and return to face display."""
     global face_renderer
     log("Clearing text display")
     if face_renderer:
         face_renderer.clear_text()
-        return {"status": "success"}
-    return {"status": "error", "message": "Display not ready"}
+    await params.result_callback("")  # Silent
 
 
-async def take_photo(params):
+async def take_photo(params: FunctionCallParams):
     """Take a photo from the Pi camera and analyze it."""
     global camera, face_renderer
     log("Taking photo from Pi camera")
 
     if camera is None or not debug_state["camera_enabled"]:
-        return {"status": "error", "message": "Camera not available"}
+        await params.result_callback("Camera is not available.")
+        return
 
     # Get the latest camera frame
     if debug_state["last_camera_jpeg"]:
@@ -1542,12 +1546,10 @@ async def take_photo(params):
         log(f"Photo captured: {len(debug_state['last_camera_jpeg'])} bytes")
 
         # Return with image data for vision model
-        return {
-            "status": "success",
-            "message": "Photo captured. Describe what you see.",
-            "image_base64": jpeg_b64
-        }
-    return {"status": "error", "message": "No camera frame available"}
+        # Note: This won't work without a vision-capable model, but we return the message
+        await params.result_callback(f"Photo captured ({len(debug_state['last_camera_jpeg'])} bytes). I can see the camera feed.")
+    else:
+        await params.result_callback("No camera frame available.")
 
 
 # Tool schemas
