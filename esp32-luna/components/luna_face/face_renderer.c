@@ -387,24 +387,24 @@ static void update_face_widgets(void)
         int line_h = line_width;
 
         if (curve_category == 100) {
-            // Cat mouth - wider line, positioned lower
-            line_len = (int)(mouth_width * 2.5f);
-            line_y = mouth_y + (int)(10 * SCALE_Y);
+            // Cat mouth - wider line, positioned much lower
+            line_len = (int)(mouth_width * 3.0f);
+            line_y = mouth_y + (int)(25 * SCALE_Y);
         } else if (curve_category == 50) {
             // Surprised O - use a thick square dot
-            line_len = (int)(30 * SCALE_X);
-            line_h = (int)(30 * SCALE_Y);
+            line_len = (int)(35 * SCALE_X);
+            line_h = (int)(35 * SCALE_Y);
         } else if (curve_category == 0) {
             // Neutral - medium line
             line_len = (int)(mouth_width * 1.5f);
         } else if (curve_category == 1) {
-            // Smile - wider line, positioned slightly lower
-            line_len = (int)(mouth_width * 2.5f);
-            line_y = mouth_y + (int)(8 * SCALE_Y);
+            // Smile - wider line, positioned MUCH lower (obvious smile)
+            line_len = (int)(mouth_width * 3.0f);
+            line_y = mouth_y + (int)(25 * SCALE_Y);
         } else {
-            // Frown - wider line, positioned slightly higher
-            line_len = (int)(mouth_width * 2.5f);
-            line_y = mouth_y - (int)(8 * SCALE_Y);
+            // Frown - wider line, positioned MUCH higher (obvious frown)
+            line_len = (int)(mouth_width * 3.0f);
+            line_y = mouth_y - (int)(25 * SCALE_Y);
         }
 
         lv_obj_set_size(s_renderer.mouth_line, line_len, line_h);
@@ -638,6 +638,10 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     create_face_widgets(scr);
+
+    // Force full-screen refresh to clear any artifacts
+    lv_obj_invalidate(scr);
+    lv_refr_now(s_renderer.display);
 
     // Create text label (for text mode)
     s_renderer.text_label = lv_label_create(scr);
