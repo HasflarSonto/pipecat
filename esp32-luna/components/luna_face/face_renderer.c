@@ -211,9 +211,9 @@ static void create_face_widgets(lv_obj_t *parent)
     lv_obj_remove_style_all(s_renderer.mouth_arc);
     // Hide background arc
     lv_obj_set_style_arc_width(s_renderer.mouth_arc, 0, LV_PART_MAIN);
-    // Style the indicator arc (the visible part) - thicker line for visibility
+    // Style the indicator arc (the visible part)
     lv_obj_set_style_arc_color(s_renderer.mouth_arc, face_color, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(s_renderer.mouth_arc, (int)(10 * SCALE_Y), LV_PART_INDICATOR);  // Thicker
+    lv_obj_set_style_arc_width(s_renderer.mouth_arc, (int)(6 * SCALE_Y), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_renderer.mouth_arc, true, LV_PART_INDICATOR);
     // Hide knob
     lv_obj_set_style_pad_all(s_renderer.mouth_arc, 0, LV_PART_KNOB);
@@ -332,24 +332,20 @@ static void update_face_widgets(void)
         s_renderer.last_eye_h = eye_h;
     }
 
-    // Update sparkles (anime-style eye highlights for excited emotion)
+    // Update sparkles
     if (params->sparkle != s_renderer.last_sparkle) {
         // Invalidate before hiding to prevent artifacts
         lv_obj_invalidate(s_renderer.left_sparkle);
         lv_obj_invalidate(s_renderer.right_sparkle);
 
         if (params->sparkle) {
-            // Larger sparkles positioned in upper-left of each eye
-            int sparkle_size = (int)(15 * SCALE_X);  // Bigger sparkle
-            int sparkle_x_offset = eye_w / 5;
-            int sparkle_y_offset = eye_h / 5;
-
+            int sparkle_size = (int)(10 * SCALE_X);  // Slightly larger
             lv_obj_set_size(s_renderer.left_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + sparkle_x_offset, left_eye_y + sparkle_y_offset);
+            lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
             lv_obj_remove_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_set_size(s_renderer.right_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + sparkle_x_offset, right_eye_y + sparkle_y_offset);
+            lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
             lv_obj_remove_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
@@ -358,10 +354,8 @@ static void update_face_widgets(void)
         s_renderer.last_sparkle = params->sparkle;
     } else if (params->sparkle && eye_changed) {
         // Update sparkle positions if eyes moved
-        int sparkle_x_offset = eye_w / 5;
-        int sparkle_y_offset = eye_h / 5;
-        lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + sparkle_x_offset, left_eye_y + sparkle_y_offset);
-        lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + sparkle_x_offset, right_eye_y + sparkle_y_offset);
+        lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
+        lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
     }
 
     // Mouth position
@@ -393,25 +387,23 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
 
-        // Arc needs to be square for proper rendering
-        // Use large size for visibility
-        int arc_size = (int)(mouth_width * 4.0f);  // Much wider for smile/frown
+        // Mouth sizes increased for better visibility
+        int arc_size = (int)(mouth_width * 2.5f);  // Increased from 2x
 
         if (curve_category == 100) {
-            // Cat mouth - wide, gentle smile (cat-like :3)
-            // Use square arc widget, positioned to show bottom curve
-            int cat_size = (int)(mouth_width * 4.5f);  // Large square
+            // Cat mouth - use a gentle smile (same as smile but positioned differently)
+            // Arc must be square for LVGL to render properly
+            int cat_size = (int)(mouth_width * 3.0f);
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 20, 160);  // Gentle curve, not full semicircle
-            lv_arc_set_angles(s_renderer.mouth_arc, 20, 160);
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
+            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
             lv_obj_set_size(s_renderer.mouth_arc, cat_size, cat_size);
-            // Position so only bottom part shows
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - cat_size/2, mouth_y - cat_size/3);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - cat_size/2, mouth_y - cat_size/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 50) {
-            // O-shaped surprised mouth - full circle (larger)
-            int o_size = (int)((50.0f + params->mouth_open * 50.0f) * SCALE_X);
+            // O-shaped surprised mouth - full circle
+            int o_size = (int)((40.0f + params->mouth_open * 40.0f) * SCALE_X);
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 360);
@@ -421,29 +413,29 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 0) {
             // Straight line mouth - narrower for neutral
-            int line_len = (int)(mouth_width * 1.8f);  // Less wide
+            int line_len = (int)(mouth_width * 2.0f);
             lv_obj_set_size(s_renderer.mouth_line, line_len, line_width);
             lv_obj_set_pos(s_renderer.mouth_line, mouth_x - line_len/2, mouth_y - line_width/2);
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 1) {
-            // Smile - arc from 0 to 180 (bottom half), much bigger
+            // Smile - arc must be square for LVGL to render properly
+            int smile_size = (int)(mouth_width * 3.0f);  // Wider
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
             lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
-            // Position so bottom of arc is at mouth_y
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/3);
+            lv_obj_set_size(s_renderer.mouth_arc, smile_size, smile_size);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - smile_size/2, mouth_y - smile_size/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else {
-            // Frown - arc from 180 to 360 (top half), much bigger
+            // Frown - arc must be square for LVGL to render properly
+            int frown_size = (int)(mouth_width * 3.0f);  // Wider
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
             lv_arc_set_angles(s_renderer.mouth_arc, 180, 360);
-            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
-            // Position so top of arc is at mouth_y
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size*2/3);
+            lv_obj_set_size(s_renderer.mouth_arc, frown_size, frown_size);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - frown_size/2, mouth_y - frown_size*3/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         }
 
@@ -457,20 +449,19 @@ static void update_face_widgets(void)
         lv_obj_invalidate(s_renderer.right_brow);
 
         if (params->angry_brows) {
-            // Position brows closer to eyes and make them larger
-            int brow_y = s_renderer.eye_base_y - (int)(30.0f * SCALE_Y) + offset_y;
-            int brow_length = (int)(50.0f * SCALE_X);  // Wider
-            int brow_thickness = (int)(8 * SCALE_Y);   // Thicker
+            int brow_y = s_renderer.eye_base_y - (int)(40.0f * SCALE_Y) + offset_y;
+            int brow_length = (int)(35.0f * SCALE_X);
+            int brow_width = (int)(5 * SCALE_Y);
             int left_x = s_renderer.left_eye_base_x + offset_x;
             int right_x = s_renderer.right_eye_base_x + offset_x;
 
-            // Left brow - positioned above left eye
-            lv_obj_set_size(s_renderer.left_brow, brow_length, brow_thickness);
+            // Left brow (simple rectangle for now - angled brows would need line widget)
+            lv_obj_set_size(s_renderer.left_brow, brow_length, brow_width);
             lv_obj_set_pos(s_renderer.left_brow, left_x - brow_length/2, brow_y);
             lv_obj_remove_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
 
-            // Right brow - positioned above right eye
-            lv_obj_set_size(s_renderer.right_brow, brow_length, brow_thickness);
+            // Right brow
+            lv_obj_set_size(s_renderer.right_brow, brow_length, brow_width);
             lv_obj_set_pos(s_renderer.right_brow, right_x - brow_length/2, brow_y);
             lv_obj_remove_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
         } else {
