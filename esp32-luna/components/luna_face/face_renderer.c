@@ -1,10 +1,10 @@
 /*
  * Luna Face Renderer for ESP32
- * Widget-based rendering engine using LVGL
+ * Canvas-based rendering engine using LVGL
  * Ported from luna_face_renderer.py
  *
- * Uses LVGL widgets (not canvas) for efficient dirty rectangle updates.
- * Only changed areas are sent to display, avoiding SPI overflow.
+ * Uses LVGL canvas (not widgets) for clean rendering without artifacts.
+ * Canvas is cleared and redrawn each frame - no dirty rectangle issues.
  * Rotated 90° clockwise for landscape mode.
  */
 
@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_random.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -26,23 +27,31 @@ static const char *TAG = "face_renderer";
 
 // Display configuration - LANDSCAPE after 90° rotation
 // Original hardware: 410x502, After rotation: 502x410
-#define DEFAULT_WIDTH       502
-#define DEFAULT_HEIGHT      410
+#define DISPLAY_WIDTH       502
+#define DISPLAY_HEIGHT      410
+
+// Canvas size (full screen for face)
+#define CANVAS_WIDTH        DISPLAY_WIDTH
+#define CANVAS_HEIGHT       DISPLAY_HEIGHT
 
 // Colors
-#define BG_COLOR            0x1E1E28    // Dark background
-#define FACE_COLOR          0xFFFFFF    // White for features
+#define BG_COLOR_R          30
+#define BG_COLOR_G          30
+#define BG_COLOR_B          40
+#define FACE_COLOR_R        255
+#define FACE_COLOR_G        255
+#define FACE_COLOR_B        255
 
-// Animation timing - SLOWER to avoid SPI overflow
-#define ANIMATION_PERIOD_MS    66       // ~15 FPS (was 50ms/20FPS)
-#define RENDER_TASK_STACK_SIZE (8 * 1024)
+// Animation timing
+#define ANIMATION_PERIOD_MS    50       // ~20 FPS
+#define RENDER_TASK_STACK_SIZE (12 * 1024)
 #define RENDER_TASK_PRIORITY   3
 #define RENDER_TASK_CORE       1
 
-#define EMOTION_TRANSITION_SPEED    2.5f  // Slower transitions
-#define GAZE_FOLLOW_SPEED          8.0f
+#define EMOTION_TRANSITION_SPEED    4.0f
+#define GAZE_FOLLOW_SPEED          10.0f
 #define BLINK_SPEED                10.0f
-#define FACE_SHIFT_SPEED           5.0f
+#define FACE_SHIFT_SPEED           6.0f
 
 // Blink timing
 #define BLINK_MIN_INTERVAL_MS      2000
@@ -60,10 +69,8 @@ static const char *TAG = "face_renderer";
 // Maximum text length
 #define MAX_TEXT_LENGTH            512
 
-// Minimum change thresholds to reduce unnecessary updates
-#define MIN_EYE_CHANGE             2.0f
-#define MIN_GAZE_CHANGE            0.02f
-#define MIN_MOUTH_CHANGE           2.0f
+// Canvas draw buffer - will be allocated in PSRAM
+static uint8_t *s_canvas_buf = NULL;
 
 // Renderer state
 static struct {
@@ -74,31 +81,20 @@ static struct {
     // Display
     lv_display_t *display;
 
-    // LVGL objects for face
-    lv_obj_t *left_eye;
-    lv_obj_t *right_eye;
-    lv_obj_t *mouth_arc;
-    lv_obj_t *mouth_line;
-    lv_obj_t *left_brow;
-    lv_obj_t *right_brow;
-    lv_obj_t *left_sparkle;
-    lv_obj_t *right_sparkle;
+    // Canvas for face rendering
+    lv_obj_t *canvas;
 
-    // Text label
+    // Text label (widget, shown only in text mode)
     lv_obj_t *text_label;
-
-    // Pixel art objects
-    lv_obj_t **pixel_objs;
-    size_t pixel_obj_count;
 
     // Face geometry
     int center_x;
     int center_y;
     int eye_spacing;
-    int left_eye_base_x;
-    int right_eye_base_x;
-    int eye_base_y;
-    int mouth_base_y;
+    int left_eye_x;
+    int right_eye_x;
+    int eye_y;
+    int mouth_y;
 
     // Display mode
     display_mode_t mode;
@@ -134,6 +130,11 @@ static struct {
     uint32_t text_color;
     uint32_t text_bg_color;
 
+    // Pixel art
+    uint32_t *pixel_data;
+    size_t pixel_count;
+    uint32_t pixel_bg_color;
+
     // Render task
     TaskHandle_t render_task;
     int64_t last_anim_time;
@@ -147,18 +148,6 @@ static struct {
     int64_t last_fps_time;
     int frame_count;
 
-    // Last rendered values (to detect changes)
-    int last_eye_x;
-    int last_eye_y;
-    int last_eye_w;
-    int last_eye_h;
-    int last_mouth_curve;
-    bool last_angry_brows;
-    bool last_sparkle;
-
-    // Full screen invalidation counter (to clear artifacts)
-    int invalidate_counter;
-
     // Mutex for thread safety
     SemaphoreHandle_t mutex;
 } s_renderer = {0};
@@ -166,7 +155,7 @@ static struct {
 // Forward declarations
 static void render_task_func(void *pvParameters);
 static void update_animation(float delta_time);
-static void update_face_widgets(void);
+static void draw_face(void);
 static float get_blink_factor(void);
 
 static float lerp(float a, float b, float t)
@@ -174,9 +163,9 @@ static float lerp(float a, float b, float t)
     return a + (b - a) * t;
 }
 
-static lv_color_t rgb888_to_lv(uint32_t rgb)
+static lv_color_t make_color(uint8_t r, uint8_t g, uint8_t b)
 {
-    return lv_color_make((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    return lv_color_make(r, g, b);
 }
 
 static int random_range(int min_val, int max_val)
@@ -184,99 +173,83 @@ static int random_range(int min_val, int max_val)
     return min_val + (esp_random() % (max_val - min_val + 1));
 }
 
-// Create face widget objects
-static void create_face_widgets(lv_obj_t *parent)
+// Draw a filled rounded rectangle
+static void draw_rounded_rect(lv_layer_t *layer, int x1, int y1, int x2, int y2, int radius, lv_color_t color)
 {
-    lv_color_t face_color = rgb888_to_lv(FACE_COLOR);
-    lv_color_t bg_color = rgb888_to_lv(BG_COLOR);
+    if (x2 <= x1 || y2 <= y1) return;
 
-    // Left eye
-    s_renderer.left_eye = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.left_eye);
-    lv_obj_set_style_bg_color(s_renderer.left_eye, face_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.left_eye, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.left_eye, 15, 0);
-    lv_obj_set_style_border_width(s_renderer.left_eye, 0, 0);
+    lv_draw_rect_dsc_t rect_dsc;
+    lv_draw_rect_dsc_init(&rect_dsc);
+    rect_dsc.bg_color = color;
+    rect_dsc.bg_opa = LV_OPA_COVER;
+    rect_dsc.radius = radius;
 
-    // Right eye
-    s_renderer.right_eye = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.right_eye);
-    lv_obj_set_style_bg_color(s_renderer.right_eye, face_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.right_eye, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.right_eye, 15, 0);
-    lv_obj_set_style_border_width(s_renderer.right_eye, 0, 0);
-
-    // Mouth arc (for smile/frown)
-    s_renderer.mouth_arc = lv_arc_create(parent);
-    lv_obj_remove_style_all(s_renderer.mouth_arc);
-    // Hide background arc
-    lv_obj_set_style_arc_width(s_renderer.mouth_arc, 0, LV_PART_MAIN);
-    // Style the indicator arc (the visible part)
-    lv_obj_set_style_arc_color(s_renderer.mouth_arc, face_color, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(s_renderer.mouth_arc, (int)(6 * SCALE_Y), LV_PART_INDICATOR);
-    lv_obj_set_style_arc_rounded(s_renderer.mouth_arc, true, LV_PART_INDICATOR);
-    // Hide knob
-    lv_obj_set_style_pad_all(s_renderer.mouth_arc, 0, LV_PART_KNOB);
-    lv_obj_set_style_bg_opa(s_renderer.mouth_arc, LV_OPA_TRANSP, LV_PART_KNOB);
-    // Set arc mode to normal (not rotated)
-    lv_arc_set_mode(s_renderer.mouth_arc, LV_ARC_MODE_NORMAL);
-    lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-
-    // Mouth line (for neutral/straight)
-    s_renderer.mouth_line = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.mouth_line);
-    lv_obj_set_style_bg_color(s_renderer.mouth_line, face_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.mouth_line, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.mouth_line, 3, 0);
-    lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
-
-    // Left brow (for angry)
-    s_renderer.left_brow = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.left_brow);
-    lv_obj_set_style_bg_color(s_renderer.left_brow, face_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.left_brow, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.left_brow, 2, 0);
-    lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-
-    // Right brow (for angry)
-    s_renderer.right_brow = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.right_brow);
-    lv_obj_set_style_bg_color(s_renderer.right_brow, face_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.right_brow, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.right_brow, 2, 0);
-    lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-
-    // Left sparkle (for excited)
-    s_renderer.left_sparkle = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.left_sparkle);
-    lv_obj_set_style_bg_color(s_renderer.left_sparkle, bg_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.left_sparkle, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.left_sparkle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-
-    // Right sparkle (for excited)
-    s_renderer.right_sparkle = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.right_sparkle);
-    lv_obj_set_style_bg_color(s_renderer.right_sparkle, bg_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.right_sparkle, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.right_sparkle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+    lv_area_t area = {
+        .x1 = x1,
+        .y1 = y1,
+        .x2 = x2,
+        .y2 = y2
+    };
+    lv_draw_rect(layer, &rect_dsc, &area);
 }
 
-// Update face widget positions and sizes
-static void update_face_widgets(void)
+// Draw a filled circle
+static void draw_circle(lv_layer_t *layer, int cx, int cy, int radius, lv_color_t color)
+{
+    draw_rounded_rect(layer, cx - radius, cy - radius, cx + radius, cy + radius, radius, color);
+}
+
+// Draw an arc (curved line)
+static void draw_arc(lv_layer_t *layer, int cx, int cy, int radius, int start_angle, int end_angle, int width, lv_color_t color)
+{
+    lv_draw_arc_dsc_t arc_dsc;
+    lv_draw_arc_dsc_init(&arc_dsc);
+    arc_dsc.color = color;
+    arc_dsc.width = width;
+    arc_dsc.start_angle = start_angle;
+    arc_dsc.end_angle = end_angle;
+    arc_dsc.center.x = cx;
+    arc_dsc.center.y = cy;
+    arc_dsc.radius = radius;
+    arc_dsc.opa = LV_OPA_COVER;
+    arc_dsc.rounded = true;
+
+    lv_draw_arc(layer, &arc_dsc);
+}
+
+// Draw a line
+static void draw_line(lv_layer_t *layer, int x1, int y1, int x2, int y2, int width, lv_color_t color)
+{
+    lv_draw_line_dsc_t line_dsc;
+    lv_draw_line_dsc_init(&line_dsc);
+    line_dsc.color = color;
+    line_dsc.width = width;
+    line_dsc.opa = LV_OPA_COVER;
+    line_dsc.round_start = true;
+    line_dsc.round_end = true;
+
+    line_dsc.p1.x = x1;
+    line_dsc.p1.y = y1;
+    line_dsc.p2.x = x2;
+    line_dsc.p2.y = y2;
+
+    lv_draw_line(layer, &line_dsc);
+}
+
+// Draw robot eye (rounded rectangle)
+static void draw_robot_eye(lv_layer_t *layer, int x, int y, bool is_right)
 {
     emotion_config_t *params = &s_renderer.current_params;
-
-    // Calculate blink factor
     float blink_factor = get_blink_factor();
 
-    // Calculate eye dimensions
     float eye_height = params->eye_height * SCALE_Y;
     float eye_width = params->eye_width * SCALE_X;
+
+    // Apply openness
     eye_height *= params->eye_openness;
+
+    // Apply blink
     eye_height *= (1.0f - blink_factor * 0.95f);
-    if (eye_height < 5) eye_height = 5;
 
     // Gaze offset
     float gaze_range_x = 28.0f * SCALE_X;
@@ -284,198 +257,194 @@ static void update_face_widgets(void)
     int gaze_x_offset = (int)((s_renderer.gaze_x - 0.5f) * 2.0f * gaze_range_x);
     int gaze_y_offset = (int)((s_renderer.gaze_y - 0.5f) * 2.0f * gaze_range_y);
 
-    // Face offset
+    // Tilt for confused
+    int y_offset = gaze_y_offset;
+    if (params->tilt_eyes) {
+        y_offset += is_right ? (int)(8.0f * SCALE_Y) : (int)(-8.0f * SCALE_Y);
+    }
+
+    // Look to side for thinking
+    int x_offset = gaze_x_offset;
+    if (params->look_side) {
+        x_offset = (int)(12.0f * SCALE_X);
+    }
+
+    // Minimum height
+    if (eye_height < 5) eye_height = 5;
+
+    int w = (int)eye_width;
+    int h = (int)eye_height;
+    int radius = (h < w) ? h / 2 : w / 2;
+    if (radius > (int)(15.0f * SCALE_Y)) radius = (int)(15.0f * SCALE_Y);
+
+    lv_color_t face_color = make_color(FACE_COLOR_R, FACE_COLOR_G, FACE_COLOR_B);
+    draw_rounded_rect(layer,
+                      x + x_offset - w/2,
+                      y + y_offset - h/2,
+                      x + x_offset + w/2,
+                      y + y_offset + h/2,
+                      radius, face_color);
+
+    // Draw sparkle if excited
+    if (params->sparkle) {
+        lv_color_t bg_color = make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B);
+        int sparkle_size = (int)(12 * SCALE_X);
+        int sparkle_x = x + x_offset - w/4;
+        int sparkle_y = y + y_offset - h/4;
+        draw_circle(layer, sparkle_x, sparkle_y, sparkle_size/2, bg_color);
+    }
+}
+
+// Draw robot mouth - simple curved line or O shape
+static void draw_robot_mouth(lv_layer_t *layer, int offset_x, int offset_y)
+{
+    emotion_config_t *params = &s_renderer.current_params;
+    float mouth_curve = params->mouth_curve;
+    float mouth_open = params->mouth_open;
+    int mouth_width = (int)(params->mouth_width * SCALE_X);
+
+    int x = s_renderer.center_x + offset_x;
+    int y = s_renderer.mouth_y + offset_y;
+
+    lv_color_t face_color = make_color(FACE_COLOR_R, FACE_COLOR_G, FACE_COLOR_B);
+    lv_color_t bg_color = make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B);
+    int line_width = (int)(4 * SCALE_Y);
+
+    if (mouth_open > 0.3f) {
+        // Draw O-shaped mouth for surprised (ring shape)
+        int o_width = (int)((20 + mouth_open * 15) * SCALE_X);
+        int o_height = (int)((15 + mouth_open * 20) * SCALE_Y);
+
+        // Outer ellipse (white)
+        draw_rounded_rect(layer, x - o_width, y - o_height, x + o_width, y + o_height, o_height, face_color);
+        // Inner ellipse (dark) - makes it a ring
+        int inner_pad = (int)(4 * SCALE_Y);
+        draw_rounded_rect(layer, x - o_width + inner_pad, y - o_height + inner_pad,
+                          x + o_width - inner_pad, y + o_height - inner_pad,
+                          o_height - inner_pad, bg_color);
+    } else if (fabsf(mouth_curve) < 0.1f) {
+        // Straight line for neutral
+        draw_line(layer, x - mouth_width, y, x + mouth_width, y, line_width, face_color);
+    } else {
+        // Curved smile or frown using arc
+        int curve_amount = (int)(fabsf(mouth_curve) * 15.0f * SCALE_Y);
+        int arc_radius = mouth_width;
+
+        if (mouth_curve > 0) {
+            // Smile - arc curving down (0-180 degrees)
+            draw_arc(layer, x, y - curve_amount, arc_radius, 0, 180, line_width, face_color);
+        } else {
+            // Frown - arc curving up (180-360 degrees)
+            draw_arc(layer, x, y + curve_amount, arc_radius, 180, 360, line_width, face_color);
+        }
+    }
+}
+
+// Draw cat mouth - horizontal ω shape with whiskers
+static void draw_cat_mouth(lv_layer_t *layer, int offset_x, int offset_y)
+{
+    int x = s_renderer.center_x + offset_x;
+    int y = s_renderer.eye_y + (int)(50 * SCALE_Y) + offset_y;
+
+    lv_color_t face_color = make_color(FACE_COLOR_R, FACE_COLOR_G, FACE_COLOR_B);
+    int line_width = (int)(4 * SCALE_Y);
+
+    int bump_size = (int)(10 * SCALE_Y);
+    int bump_width = (int)(18 * SCALE_X);
+
+    // Left bump (curves down) - arc from 0 to 180
+    draw_arc(layer, x - bump_width, y, bump_size, 0, 180, line_width, face_color);
+
+    // Right bump (curves down) - arc from 0 to 180
+    draw_arc(layer, x + bump_width, y, bump_size, 0, 180, line_width, face_color);
+
+    // Whiskers
+    int whisker_length = (int)(40 * SCALE_X);
+    int whisker_start_x = (int)(55 * SCALE_X);
+    int whisker_y = s_renderer.eye_y + (int)(45 * SCALE_Y) + offset_y;
+
+    int angles[] = {-15, 0, 15};
+    for (int i = 0; i < 3; i++) {
+        float angle_rad = angles[i] * 3.14159f / 180.0f;
+        int end_y_offset = (int)(sinf(angle_rad) * whisker_length);
+        int y_spacing = (i - 1) * (int)(8 * SCALE_Y);
+
+        // Left whiskers
+        draw_line(layer,
+                  x - whisker_start_x, whisker_y + y_spacing,
+                  x - whisker_start_x - whisker_length, whisker_y + y_spacing + end_y_offset,
+                  (int)(3 * SCALE_Y), face_color);
+
+        // Right whiskers
+        draw_line(layer,
+                  x + whisker_start_x, whisker_y + y_spacing,
+                  x + whisker_start_x + whisker_length, whisker_y + y_spacing + end_y_offset,
+                  (int)(3 * SCALE_Y), face_color);
+    }
+}
+
+// Draw angry eyebrows
+static void draw_angry_brows(lv_layer_t *layer, int offset_x, int offset_y)
+{
+    int brow_y = s_renderer.eye_y - (int)(35 * SCALE_Y) + offset_y;
+    int brow_length = (int)(30 * SCALE_X);
+    int left_eye_x = s_renderer.left_eye_x + offset_x;
+    int right_eye_x = s_renderer.right_eye_x + offset_x;
+
+    lv_color_t face_color = make_color(FACE_COLOR_R, FACE_COLOR_G, FACE_COLOR_B);
+    int line_width = (int)(5 * SCALE_Y);
+
+    // Left brow - angled down toward center
+    draw_line(layer,
+              left_eye_x - brow_length, brow_y - (int)(10 * SCALE_Y),
+              left_eye_x + (int)(10 * SCALE_X), brow_y + (int)(5 * SCALE_Y),
+              line_width, face_color);
+
+    // Right brow - angled down toward center
+    draw_line(layer,
+              right_eye_x - (int)(10 * SCALE_X), brow_y + (int)(5 * SCALE_Y),
+              right_eye_x + brow_length, brow_y - (int)(10 * SCALE_Y),
+              line_width, face_color);
+}
+
+// Draw the complete face
+static void draw_face(void)
+{
+    if (!s_renderer.canvas) return;
+
+    lv_layer_t layer;
+    lv_canvas_init_layer(s_renderer.canvas, &layer);
+
+    // Clear canvas with background color
+    lv_canvas_fill_bg(s_renderer.canvas, make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B), LV_OPA_COVER);
+
+    emotion_config_t *params = &s_renderer.current_params;
+
+    // Apply face offset for edge tracking
     int offset_x = (int)s_renderer.face_offset_x;
     int offset_y = (int)s_renderer.face_offset_y;
 
-    // Think offset (look to side)
-    int think_offset = params->look_side ? (int)(12.0f * SCALE_X) : 0;
+    int left_eye_x = s_renderer.left_eye_x + offset_x;
+    int right_eye_x = s_renderer.right_eye_x + offset_x;
+    int eye_y = s_renderer.eye_y + offset_y;
 
-    // Tilt for confused
-    int left_tilt = params->tilt_eyes ? (int)(-8.0f * SCALE_Y) : 0;
-    int right_tilt = params->tilt_eyes ? (int)(8.0f * SCALE_Y) : 0;
+    // Draw eyes
+    draw_robot_eye(&layer, left_eye_x, eye_y, false);
+    draw_robot_eye(&layer, right_eye_x, eye_y, true);
 
-    int eye_w = (int)eye_width;
-    int eye_h = (int)eye_height;
-
-    // Calculate corner radius
-    int radius = (eye_h < eye_w) ? eye_h / 2 : eye_w / 2;
-    int max_radius = (int)(15.0f * SCALE_Y);
-    if (radius > max_radius) radius = max_radius;
-
-    // Calculate eye positions
-    int left_eye_x = s_renderer.left_eye_base_x + offset_x + gaze_x_offset + think_offset - eye_w/2;
-    int left_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + left_tilt - eye_h/2;
-    int right_eye_x = s_renderer.right_eye_base_x + offset_x + gaze_x_offset + think_offset - eye_w/2;
-    int right_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + right_tilt - eye_h/2;
-
-    // Check if significant change
-    bool eye_changed = (abs(left_eye_x - s_renderer.last_eye_x) > MIN_EYE_CHANGE ||
-                        abs(left_eye_y - s_renderer.last_eye_y) > MIN_EYE_CHANGE ||
-                        abs(eye_w - s_renderer.last_eye_w) > MIN_EYE_CHANGE ||
-                        abs(eye_h - s_renderer.last_eye_h) > MIN_EYE_CHANGE);
-
-    if (eye_changed) {
-        // Update left eye
-        lv_obj_set_pos(s_renderer.left_eye, left_eye_x, left_eye_y);
-        lv_obj_set_size(s_renderer.left_eye, eye_w, eye_h);
-        lv_obj_set_style_radius(s_renderer.left_eye, radius, 0);
-
-        // Update right eye
-        lv_obj_set_pos(s_renderer.right_eye, right_eye_x, right_eye_y);
-        lv_obj_set_size(s_renderer.right_eye, eye_w, eye_h);
-        lv_obj_set_style_radius(s_renderer.right_eye, radius, 0);
-
-        s_renderer.last_eye_x = left_eye_x;
-        s_renderer.last_eye_y = left_eye_y;
-        s_renderer.last_eye_w = eye_w;
-        s_renderer.last_eye_h = eye_h;
+    // Draw angry brows if needed
+    if (params->angry_brows) {
+        draw_angry_brows(&layer, offset_x, offset_y);
     }
 
-    // Update sparkles
-    if (params->sparkle != s_renderer.last_sparkle) {
-        // Invalidate before hiding to prevent artifacts
-        lv_obj_invalidate(s_renderer.left_sparkle);
-        lv_obj_invalidate(s_renderer.right_sparkle);
-
-        if (params->sparkle) {
-            int sparkle_size = (int)(10 * SCALE_X);  // Slightly larger
-            lv_obj_set_size(s_renderer.left_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
-            lv_obj_remove_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-
-            lv_obj_set_size(s_renderer.right_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
-            lv_obj_remove_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-        }
-        s_renderer.last_sparkle = params->sparkle;
-    } else if (params->sparkle && eye_changed) {
-        // Update sparkle positions if eyes moved
-        lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
-        lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
-    }
-
-    // Mouth position
-    int mouth_x = s_renderer.center_x + offset_x;
-    int mouth_y = s_renderer.mouth_base_y + offset_y;
-    int mouth_width = (int)(params->mouth_width * SCALE_X);
-    int line_width = (int)(6 * SCALE_Y);
-
-    // Calculate mouth curve category
-    int curve_category;
+    // Draw mouth
     if (params->cat_face) {
-        curve_category = 100;  // Cat mode
-    } else if (params->mouth_open > 0.3f) {
-        curve_category = 50;   // O mouth
-    } else if (fabsf(params->mouth_curve) < 0.1f) {
-        curve_category = 0;    // Straight
-    } else if (params->mouth_curve > 0) {
-        curve_category = 1;    // Smile
+        draw_cat_mouth(&layer, offset_x, offset_y);
     } else {
-        curve_category = -1;   // Frown
+        draw_robot_mouth(&layer, offset_x, offset_y);
     }
 
-    // Debug: log when curve changes
-    if (curve_category != s_renderer.last_mouth_curve) {
-        ESP_LOGI(TAG, "Mouth: cat=%d open=%.2f curve=%.2f -> category=%d",
-                 params->cat_face, params->mouth_open, params->mouth_curve, curve_category);
-    }
-
-    if (curve_category != s_renderer.last_mouth_curve) {
-        // Invalidate old mouth areas before hiding (prevents artifacts)
-        lv_obj_invalidate(s_renderer.mouth_arc);
-        lv_obj_invalidate(s_renderer.mouth_line);
-
-        // Hide all mouth objects first
-        lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
-
-        // Mouth sizes increased for better visibility
-        int arc_size = (int)(mouth_width * 2.5f);  // Increased from 2x
-
-        if (curve_category == 100) {
-            // Cat mouth - use a gentle smile (same as smile but positioned differently)
-            // Arc must be square for LVGL to render properly
-            int cat_size = (int)(mouth_width * 3.0f);
-            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
-            lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
-            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, cat_size, cat_size);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - cat_size/2, mouth_y - cat_size/4);
-            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        } else if (curve_category == 50) {
-            // O-shaped surprised mouth - full circle
-            int o_size = (int)((40.0f + params->mouth_open * 40.0f) * SCALE_X);
-            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
-            lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 360);
-            lv_arc_set_angles(s_renderer.mouth_arc, 0, 360);
-            lv_obj_set_size(s_renderer.mouth_arc, o_size, o_size);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - o_size/2, mouth_y - o_size/2);
-            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        } else if (curve_category == 0) {
-            // Straight line mouth - narrower for neutral
-            int line_len = (int)(mouth_width * 2.0f);
-            lv_obj_set_size(s_renderer.mouth_line, line_len, line_width);
-            lv_obj_set_pos(s_renderer.mouth_line, mouth_x - line_len/2, mouth_y - line_width/2);
-            lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
-        } else if (curve_category == 1) {
-            // Smile - arc must be square for LVGL to render properly
-            int smile_size = (int)(mouth_width * 3.0f);  // Wider
-            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
-            lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
-            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, smile_size, smile_size);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - smile_size/2, mouth_y - smile_size/4);
-            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            // Frown - arc must be square for LVGL to render properly
-            int frown_size = (int)(mouth_width * 3.0f);  // Wider
-            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
-            lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
-            lv_arc_set_angles(s_renderer.mouth_arc, 180, 360);
-            lv_obj_set_size(s_renderer.mouth_arc, frown_size, frown_size);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - frown_size/2, mouth_y - frown_size*3/4);
-            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        }
-
-        s_renderer.last_mouth_curve = curve_category;
-    }
-
-    // Update angry brows
-    if (params->angry_brows != s_renderer.last_angry_brows) {
-        // Invalidate before hiding to prevent artifacts
-        lv_obj_invalidate(s_renderer.left_brow);
-        lv_obj_invalidate(s_renderer.right_brow);
-
-        if (params->angry_brows) {
-            int brow_y = s_renderer.eye_base_y - (int)(40.0f * SCALE_Y) + offset_y;
-            int brow_length = (int)(35.0f * SCALE_X);
-            int brow_width = (int)(5 * SCALE_Y);
-            int left_x = s_renderer.left_eye_base_x + offset_x;
-            int right_x = s_renderer.right_eye_base_x + offset_x;
-
-            // Left brow (simple rectangle for now - angled brows would need line widget)
-            lv_obj_set_size(s_renderer.left_brow, brow_length, brow_width);
-            lv_obj_set_pos(s_renderer.left_brow, left_x - brow_length/2, brow_y);
-            lv_obj_remove_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-
-            // Right brow
-            lv_obj_set_size(s_renderer.right_brow, brow_length, brow_width);
-            lv_obj_set_pos(s_renderer.right_brow, right_x - brow_length/2, brow_y);
-            lv_obj_remove_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-        }
-        s_renderer.last_angry_brows = params->angry_brows;
-    }
+    lv_canvas_finish_layer(s_renderer.canvas, &layer);
 }
 
 // Render task - runs on core 1
@@ -511,19 +480,9 @@ static void render_task_func(void *pvParameters)
                 // Update animation state
                 update_animation(delta_time);
 
-                // Update face widgets
+                // Draw face to canvas
                 if (bsp_display_lock(pdMS_TO_TICKS(50))) {
-                    update_face_widgets();
-
-                    // Periodic full-screen invalidation to clear artifacts
-                    // Every ~2 seconds (30 frames at 15fps)
-                    s_renderer.invalidate_counter++;
-                    if (s_renderer.invalidate_counter >= 30) {
-                        s_renderer.invalidate_counter = 0;
-                        lv_obj_t *scr = lv_scr_act();
-                        lv_obj_invalidate(scr);
-                    }
-
+                    draw_face();
                     bsp_display_unlock();
                 }
             }
@@ -620,21 +579,6 @@ static float get_blink_factor(void)
     }
 }
 
-// Clear pixel art objects
-static void clear_pixel_objects(void)
-{
-    if (s_renderer.pixel_objs) {
-        for (size_t i = 0; i < s_renderer.pixel_obj_count; i++) {
-            if (s_renderer.pixel_objs[i]) {
-                lv_obj_delete(s_renderer.pixel_objs[i]);
-            }
-        }
-        free(s_renderer.pixel_objs);
-        s_renderer.pixel_objs = NULL;
-        s_renderer.pixel_obj_count = 0;
-    }
-}
-
 // Public API implementation
 
 esp_err_t face_renderer_init(const face_renderer_config_t *config)
@@ -643,21 +587,21 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "Initializing face renderer (widget-based, landscape)...");
+    ESP_LOGI(TAG, "Initializing face renderer (canvas-based, landscape)...");
 
-    // Set dimensions for landscape mode
-    s_renderer.width = DEFAULT_WIDTH;   // 502
-    s_renderer.height = DEFAULT_HEIGHT; // 410
+    // Set dimensions
+    s_renderer.width = DISPLAY_WIDTH;
+    s_renderer.height = DISPLAY_HEIGHT;
     s_renderer.cat_mode = config ? config->cat_mode : false;
 
     // Calculate face geometry for landscape
     s_renderer.center_x = s_renderer.width / 2;
-    s_renderer.center_y = s_renderer.height / 2 - (int)(20 * SCALE_Y);
-    s_renderer.eye_spacing = (int)(55 * SCALE_X);
-    s_renderer.left_eye_base_x = s_renderer.center_x - s_renderer.eye_spacing;
-    s_renderer.right_eye_base_x = s_renderer.center_x + s_renderer.eye_spacing;
-    s_renderer.eye_base_y = s_renderer.center_y - (int)(15 * SCALE_Y);
-    s_renderer.mouth_base_y = s_renderer.center_y + (int)(55 * SCALE_Y);
+    s_renderer.center_y = s_renderer.height / 2 - (int)(50 * SCALE_Y);
+    s_renderer.eye_spacing = (int)(50 * SCALE_X);
+    s_renderer.left_eye_x = s_renderer.center_x - s_renderer.eye_spacing;
+    s_renderer.right_eye_x = s_renderer.center_x + s_renderer.eye_spacing;
+    s_renderer.eye_y = s_renderer.center_y - (int)(10 * SCALE_Y);
+    s_renderer.mouth_y = s_renderer.center_y + (int)(50 * SCALE_Y);
 
     // Initialize LVGL display
     s_renderer.display = bsp_display_start();
@@ -666,21 +610,38 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
         return ESP_FAIL;
     }
 
-    // Rotate display 270 degrees (or 90 counter-clockwise) for landscape mode
-    // This puts the USB port on the left side when viewing
+    // Rotate display for landscape mode
     ESP_LOGI(TAG, "Rotating display 270 degrees...");
     bsp_display_rotate(s_renderer.display, LV_DISPLAY_ROTATION_270);
 
     bsp_display_backlight_on();
 
-    // Create face widgets
+    // Allocate canvas buffer in PSRAM
+    size_t buf_size = LV_DRAW_BUF_SIZE(CANVAS_WIDTH, CANVAS_HEIGHT, LV_COLOR_FORMAT_RGB565);
+    s_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
+    if (s_canvas_buf == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate canvas buffer in PSRAM (%d bytes)", buf_size);
+        // Try DRAM as fallback
+        s_canvas_buf = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+        if (s_canvas_buf == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate canvas buffer");
+            return ESP_ERR_NO_MEM;
+        }
+        ESP_LOGW(TAG, "Using DRAM for canvas buffer");
+    } else {
+        ESP_LOGI(TAG, "Canvas buffer allocated in PSRAM (%d bytes)", buf_size);
+    }
+
+    // Create canvas
     bsp_display_lock(0);
 
     lv_obj_t *scr = lv_scr_act();
-    lv_obj_set_style_bg_color(scr, rgb888_to_lv(BG_COLOR), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(scr, make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B), 0);
 
-    create_face_widgets(scr);
+    s_renderer.canvas = lv_canvas_create(scr);
+    lv_canvas_set_buffer(s_renderer.canvas, s_canvas_buf, CANVAS_WIDTH, CANVAS_HEIGHT, LV_COLOR_FORMAT_RGB565);
+    lv_obj_center(s_renderer.canvas);
+    lv_canvas_fill_bg(s_renderer.canvas, make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B), LV_OPA_COVER);
 
     // Create text label (for text mode)
     s_renderer.text_label = lv_label_create(scr);
@@ -709,15 +670,6 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     s_renderer.last_blink_time = esp_timer_get_time() / 1000;
     s_renderer.blink_interval_ms = random_range(BLINK_MIN_INTERVAL_MS, BLINK_MAX_INTERVAL_MS);
 
-    // Initialize last values for change detection
-    s_renderer.last_eye_x = -1000;
-    s_renderer.last_eye_y = -1000;
-    s_renderer.last_eye_w = 0;
-    s_renderer.last_eye_h = 0;
-    s_renderer.last_mouth_curve = -1000;
-    s_renderer.last_angry_brows = false;
-    s_renderer.last_sparkle = false;
-
     // Create mutex
     s_renderer.mutex = xSemaphoreCreateMutex();
     if (s_renderer.mutex == NULL) {
@@ -726,7 +678,7 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     }
 
     s_renderer.initialized = true;
-    ESP_LOGI(TAG, "Face renderer initialized (%dx%d, widget-based, landscape)",
+    ESP_LOGI(TAG, "Face renderer initialized (%dx%d, canvas-based, landscape)",
              s_renderer.width, s_renderer.height);
 
     return ESP_OK;
@@ -740,10 +692,10 @@ esp_err_t face_renderer_deinit(void)
 
     face_renderer_stop();
 
-    // Clean up pixel objects
-    if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-        clear_pixel_objects();
-        bsp_display_unlock();
+    // Free canvas buffer
+    if (s_canvas_buf) {
+        heap_caps_free(s_canvas_buf);
+        s_canvas_buf = NULL;
     }
 
     if (s_renderer.mutex) {
@@ -787,7 +739,7 @@ esp_err_t face_renderer_start(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Face renderer started (widget-based on core %d)", RENDER_TASK_CORE);
+    ESP_LOGI(TAG, "Face renderer started (canvas-based on core %d)", RENDER_TASK_CORE);
     return ESP_OK;
 }
 
@@ -818,10 +770,6 @@ void face_renderer_set_emotion(emotion_id_t emotion)
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         s_renderer.target_emotion = emotion;
         s_renderer.emotion_transition = 0.0f;
-
-        // Force widget state recheck on emotion change
-        s_renderer.last_mouth_curve = -1000;  // Force mouth redraw
-
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Emotion set to: %s", emotion_to_string(emotion));
     }
@@ -900,23 +848,21 @@ void face_renderer_show_text(const char *text, font_size_t size,
 
         // Update UI
         if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+            // Hide canvas
+            lv_obj_add_flag(s_renderer.canvas, LV_OBJ_FLAG_HIDDEN);
 
             // Update screen background
             lv_obj_t *scr = lv_scr_act();
-            lv_obj_set_style_bg_color(scr, rgb888_to_lv(bg_color), 0);
+            lv_obj_set_style_bg_color(scr, make_color((bg_color >> 16) & 0xFF,
+                                                       (bg_color >> 8) & 0xFF,
+                                                       bg_color & 0xFF), 0);
 
             // Show and update text label
             lv_label_set_text(s_renderer.text_label, text);
-            lv_obj_set_style_text_color(s_renderer.text_label, rgb888_to_lv(color), 0);
+            lv_obj_set_style_text_color(s_renderer.text_label,
+                                        make_color((color >> 16) & 0xFF,
+                                                   (color >> 8) & 0xFF,
+                                                   color & 0xFF), 0);
             lv_obj_remove_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
             lv_obj_center(s_renderer.text_label);
 
@@ -944,16 +890,10 @@ void face_renderer_clear_text(void)
 
             // Restore background
             lv_obj_t *scr = lv_scr_act();
-            lv_obj_set_style_bg_color(scr, rgb888_to_lv(BG_COLOR), 0);
+            lv_obj_set_style_bg_color(scr, make_color(BG_COLOR_R, BG_COLOR_G, BG_COLOR_B), 0);
 
-            // Show face widgets
-            lv_obj_remove_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            // Mouth visibility handled by update_face_widgets based on emotion
-
-            // Force update on next frame
-            s_renderer.last_eye_x = -1000;
-            s_renderer.last_mouth_curve = -1000;
+            // Show canvas
+            lv_obj_remove_flag(s_renderer.canvas, LV_OBJ_FLAG_HIDDEN);
 
             bsp_display_unlock();
         }
@@ -966,71 +906,8 @@ void face_renderer_clear_text(void)
 void face_renderer_show_pixel_art(const uint32_t *pixels, size_t count,
                                    uint32_t bg_color)
 {
-    if (!s_renderer.initialized || pixels == NULL || count == 0) {
-        return;
-    }
-
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_PIXEL_ART;
-
-        if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-
-            // Update background
-            lv_obj_t *scr = lv_scr_act();
-            lv_obj_set_style_bg_color(scr, rgb888_to_lv(bg_color), 0);
-
-            // Clear old pixel objects
-            clear_pixel_objects();
-
-            // Create pixel objects
-            int grid_width = PIXEL_GRID_COLS * PIXEL_CELL_SIZE;
-            int grid_height = PIXEL_GRID_ROWS * PIXEL_CELL_SIZE;
-            int screen_offset_x = (s_renderer.width - grid_width) / 2;
-            int screen_offset_y = (s_renderer.height - grid_height) / 2;
-
-            s_renderer.pixel_objs = malloc(count * sizeof(lv_obj_t *));
-            if (s_renderer.pixel_objs) {
-                s_renderer.pixel_obj_count = count;
-
-                for (size_t i = 0; i < count; i++) {
-                    int x = (pixels[i] >> 24) & 0xFF;
-                    int y = (pixels[i] >> 16) & 0xFF;
-                    uint32_t color = pixels[i] & 0xFFFFFF;
-
-                    if (x >= 0 && x < PIXEL_GRID_COLS && y >= 0 && y < PIXEL_GRID_ROWS) {
-                        int screen_x = screen_offset_x + x * PIXEL_CELL_SIZE;
-                        int screen_y = screen_offset_y + y * PIXEL_CELL_SIZE;
-
-                        lv_obj_t *obj = lv_obj_create(scr);
-                        lv_obj_remove_style_all(obj);
-                        lv_obj_set_size(obj, PIXEL_CELL_SIZE, PIXEL_CELL_SIZE);
-                        lv_obj_set_pos(obj, screen_x, screen_y);
-                        lv_obj_set_style_bg_color(obj, rgb888_to_lv(color), 0);
-                        lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
-                        lv_obj_set_style_border_width(obj, 0, 0);
-
-                        s_renderer.pixel_objs[i] = obj;
-                    } else {
-                        s_renderer.pixel_objs[i] = NULL;
-                    }
-                }
-            }
-
-            bsp_display_unlock();
-        }
-
-        xSemaphoreGive(s_renderer.mutex);
-        ESP_LOGI(TAG, "Pixel art: %d pixels", (int)count);
-    }
+    // TODO: Implement pixel art with canvas
+    ESP_LOGW(TAG, "Pixel art not yet implemented in canvas mode");
 }
 
 void face_renderer_clear_pixel_art(void)
@@ -1043,21 +920,8 @@ void face_renderer_clear_pixel_art(void)
         s_renderer.mode = DISPLAY_MODE_FACE;
 
         if (bsp_display_lock(pdMS_TO_TICKS(100))) {
-            // Clear pixel objects
-            clear_pixel_objects();
-
-            // Restore background
-            lv_obj_t *scr = lv_scr_act();
-            lv_obj_set_style_bg_color(scr, rgb888_to_lv(BG_COLOR), 0);
-
-            // Show face widgets
-            lv_obj_remove_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_remove_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-
-            // Force update on next frame
-            s_renderer.last_eye_x = -1000;
-            s_renderer.last_mouth_curve = -1000;
-
+            // Show canvas
+            lv_obj_remove_flag(s_renderer.canvas, LV_OBJ_FLAG_HIDDEN);
             bsp_display_unlock();
         }
 

@@ -162,9 +162,9 @@ void app_main(void)
     ESP_LOGI(TAG, "=== ESP32-Luna Ready ===");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
 
-    // Emotion names for cycling demo - DEBUG: only problematic ones
+    // Emotion names for cycling demo - all emotions
     static const char *emotion_names[] = {
-        "cat", "surprised", "excited"
+        "neutral", "happy", "sad", "angry", "surprised", "thinking", "confused", "excited", "cat"
     };
     static const int emotion_count = sizeof(emotion_names) / sizeof(emotion_names[0]);
     int emotion_index = 0;
