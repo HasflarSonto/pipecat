@@ -5,7 +5,10 @@
 
 import argparse
 import asyncio
+import base64
+import json
 import os
+import struct
 import uuid
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, TypedDict, Union
@@ -13,7 +16,7 @@ from typing import Any, Dict, List, Optional, TypedDict, Union
 import aiohttp
 import uvicorn
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, Response
+from fastapi import BackgroundTasks, FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -152,6 +155,88 @@ class WakeWordFilter(FrameProcessor):
 wake_word_filter = None
 
 
+# ============== ESP32 WEBSOCKET SUPPORT ==============
+
+class ESP32Session:
+    """Manages an ESP32 WebSocket connection."""
+
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+        self.connected = False
+        self.audio_enabled = False
+        self._send_lock = asyncio.Lock()
+
+    async def send_json(self, data: dict):
+        """Send a JSON command to the ESP32."""
+        if not self.connected:
+            return
+        async with self._send_lock:
+            try:
+                await self.websocket.send_text(json.dumps(data))
+            except Exception as e:
+                logger.error(f"ESP32: Failed to send JSON: {e}")
+
+    async def send_audio(self, data: bytes):
+        """Send audio data (16kHz 16-bit PCM mono) to ESP32."""
+        if not self.connected or not self.audio_enabled:
+            return
+        async with self._send_lock:
+            try:
+                await self.websocket.send_bytes(data)
+            except Exception as e:
+                logger.error(f"ESP32: Failed to send audio: {e}")
+
+    async def send_emotion(self, emotion: str):
+        """Send emotion command."""
+        await self.send_json({"cmd": "emotion", "value": emotion})
+
+    async def send_gaze(self, x: float, y: float):
+        """Send gaze command."""
+        await self.send_json({"cmd": "gaze", "x": x, "y": y})
+
+    async def send_text(self, content: str, size: str = "medium",
+                        color: str = "#FFFFFF", bg: str = "#1E1E28"):
+        """Send text display command."""
+        await self.send_json({
+            "cmd": "text",
+            "content": content,
+            "size": size,
+            "color": color,
+            "bg": bg
+        })
+
+    async def send_text_clear(self):
+        """Clear text display."""
+        await self.send_json({"cmd": "text_clear"})
+
+    async def send_pixel_art(self, pixels: list, bg: str = "#1E1E28"):
+        """Send pixel art command."""
+        await self.send_json({
+            "cmd": "pixel_art",
+            "pixels": pixels,
+            "bg": bg
+        })
+
+    async def send_pixel_art_clear(self):
+        """Clear pixel art."""
+        await self.send_json({"cmd": "pixel_art_clear"})
+
+    async def send_audio_start(self):
+        """Signal start of TTS audio."""
+        self.audio_enabled = True
+        await self.send_json({"cmd": "audio_start"})
+
+    async def send_audio_stop(self):
+        """Signal end of TTS audio."""
+        await self.send_json({"cmd": "audio_stop"})
+        self.audio_enabled = False
+
+
+# Active ESP32 sessions
+esp32_sessions: Dict[str, ESP32Session] = {}
+current_esp32_session: Optional[ESP32Session] = None
+
+
 # ============== TOOL IMPLEMENTATIONS ==============
 
 async def get_weather(params: FunctionCallParams):
@@ -283,7 +368,7 @@ VALID_EMOTIONS = ["neutral", "happy", "sad", "angry", "surprised", "thinking", "
 
 async def set_emotion(params: FunctionCallParams):
     """Set Luna's facial emotion."""
-    global current_task, face_renderer
+    global current_task, face_renderer, current_esp32_session
     emotion = params.arguments.get("emotion", "neutral").lower()
     logger.info(f"Setting emotion to: {emotion}")
 
@@ -291,9 +376,13 @@ async def set_emotion(params: FunctionCallParams):
         await params.result_callback(f"Unknown emotion. Valid emotions are: {', '.join(VALID_EMOTIONS)}")
         return
 
-    # Update the face renderer
+    # Update the face renderer (web mode)
     if face_renderer:
         face_renderer.set_emotion(emotion)
+
+    # Also send to ESP32 if connected
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_emotion(emotion)
 
     # Also send emotion update to frontend via RTVI (for any client-side UI)
     if current_task:
@@ -308,7 +397,7 @@ async def set_emotion(params: FunctionCallParams):
 
 async def draw_pixel_art(params: FunctionCallParams):
     """Draw pixel art on Luna's screen (12x16 grid)."""
-    global face_renderer
+    global face_renderer, current_esp32_session
     pixels = params.arguments.get("pixels", [])
     background = params.arguments.get("background", "#1E1E28")
     duration = params.arguments.get("duration", 8)  # Default 8 seconds for better visibility
@@ -325,44 +414,53 @@ async def draw_pixel_art(params: FunctionCallParams):
         y = p.get("y")
         color = p.get("color", "#FFFFFF")
         if x is not None and y is not None:
-            valid_pixels.append({"x": int(x), "y": int(y), "color": str(color)})
+            valid_pixels.append({"x": int(x), "y": int(y), "c": str(color)})
 
     if not valid_pixels:
         await params.result_callback("No valid pixels found. Each pixel needs x, y, and color.")
         return
 
-    # Update the face renderer
+    # Update the face renderer (web mode)
     if face_renderer:
-        face_renderer.set_pixel_art(valid_pixels, background)
-        await params.result_callback(f"Drawing displayed for {duration} seconds")
+        # Convert 'c' back to 'color' for web renderer
+        web_pixels = [{"x": p["x"], "y": p["y"], "color": p["c"]} for p in valid_pixels]
+        face_renderer.set_pixel_art(web_pixels, background)
 
-        # Auto-clear after duration
-        async def auto_clear():
-            await asyncio.sleep(duration)
-            if face_renderer:
-                face_renderer.clear_pixel_art()
-                logger.info("Auto-cleared pixel art after duration")
+    # Send to ESP32 if connected
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_pixel_art(valid_pixels, background)
 
-        asyncio.create_task(auto_clear())
-    else:
-        await params.result_callback("Drawing system not ready")
+    await params.result_callback(f"Drawing displayed for {duration} seconds")
+
+    # Auto-clear after duration
+    async def auto_clear():
+        await asyncio.sleep(duration)
+        if face_renderer:
+            face_renderer.clear_pixel_art()
+        if current_esp32_session and current_esp32_session.connected:
+            await current_esp32_session.send_pixel_art_clear()
+        logger.info("Auto-cleared pixel art after duration")
+
+    asyncio.create_task(auto_clear())
 
 
 async def clear_drawing(params: FunctionCallParams):
     """Clear pixel art and return to normal face display."""
-    global face_renderer
+    global face_renderer, current_esp32_session
     logger.info("Clearing pixel art")
 
     if face_renderer:
         face_renderer.clear_pixel_art()
-        await params.result_callback("Drawing cleared, face restored")
-    else:
-        await params.result_callback("Face renderer not ready")
+
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_pixel_art_clear()
+
+    await params.result_callback("Drawing cleared, face restored")
 
 
 async def display_text(params: FunctionCallParams):
     """Display text on Luna's screen."""
-    global face_renderer
+    global face_renderer, current_esp32_session
     text = params.arguments.get("text", "")
     font_size = params.arguments.get("font_size", "medium")
     color = params.arguments.get("color", "#FFFFFF")
@@ -377,46 +475,58 @@ async def display_text(params: FunctionCallParams):
         await params.result_callback("No text provided.")
         return
 
+    # Update the face renderer (web mode)
     if face_renderer:
         face_renderer.set_text(text, font_size, color, background, align, valign)
-        await params.result_callback(f"Text displayed for {duration} seconds")
 
-        # Auto-clear after duration
-        async def auto_clear():
-            await asyncio.sleep(duration)
-            if face_renderer:
-                face_renderer.clear_text()
-                logger.info("Auto-cleared text after duration")
+    # Send to ESP32 if connected
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_text(text, font_size, color, background)
 
-        asyncio.create_task(auto_clear())
-    else:
-        await params.result_callback("Display not ready")
+    await params.result_callback(f"Text displayed for {duration} seconds")
+
+    # Auto-clear after duration
+    async def auto_clear():
+        await asyncio.sleep(duration)
+        if face_renderer:
+            face_renderer.clear_text()
+        if current_esp32_session and current_esp32_session.connected:
+            await current_esp32_session.send_text_clear()
+        logger.info("Auto-cleared text after duration")
+
+    asyncio.create_task(auto_clear())
 
 
 async def clear_text_display(params: FunctionCallParams):
     """Clear text and return to face display."""
-    global face_renderer
+    global face_renderer, current_esp32_session
     logger.info("Clearing text display")
 
     if face_renderer:
         face_renderer.clear_text()
-        await params.result_callback("Text cleared, face restored")
-    else:
-        await params.result_callback("Display not ready")
+
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_text_clear()
+
+    await params.result_callback("Text cleared, face restored")
 
 
 async def stay_quiet(params: FunctionCallParams):
     """Stay quiet - respond with only a facial expression, no speech."""
-    global face_renderer
+    global face_renderer, current_esp32_session
     emotion = params.arguments.get("emotion", "neutral").lower()
     logger.info(f"Staying quiet with emotion: {emotion}")
 
     if emotion not in VALID_EMOTIONS:
         emotion = "neutral"
 
-    # Update the face renderer with the emotion
+    # Update the face renderer with the emotion (web mode)
     if face_renderer:
         face_renderer.set_emotion(emotion)
+
+    # Also send to ESP32 if connected
+    if current_esp32_session and current_esp32_session.connected:
+        await current_esp32_session.send_emotion(emotion)
 
     # Return empty result - the LLM should not generate any speech after this
     await params.result_callback("")
@@ -693,7 +803,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     # LLM: Anthropic Claude (using Haiku for speed)
     llm = AnthropicLLMService(
         api_key=os.getenv("ANTHROPIC_API_KEY"),
-        model="claude-3-5-haiku-latest",
+        model="claude-haiku-4-5-20251001",
     )
 
     # Register tool handlers
@@ -917,6 +1027,132 @@ Be warm but brief. Your name is Luna.""",
     await runner.run(task)
 
 
+# ============== ESP32 BOT PIPELINE ==============
+
+async def run_esp32_bot(session: ESP32Session):
+    """
+    Run the pipecat pipeline for an ESP32 client.
+    This is a simplified pipeline without WebRTC transport.
+    Audio comes from WebSocket binary frames and goes out the same way.
+    """
+    logger.info("Starting ESP32 bot pipeline")
+
+    # Create an audio queue for the session
+    session.audio_queue = asyncio.Queue()
+
+    # Speech-to-Text: OpenAI (Whisper)
+    stt = OpenAISTTService(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        model="gpt-4o-transcribe",
+    )
+
+    # Text-to-Speech: OpenAI
+    tts = OpenAITTSService(
+        api_key=os.getenv("OPENAI_API_KEY"),
+        voice="nova",
+    )
+
+    # LLM: Anthropic Claude (using Haiku for speed)
+    llm = AnthropicLLMService(
+        api_key=os.getenv("ANTHROPIC_API_KEY"),
+        model="claude-haiku-4-5-20251001",
+    )
+
+    # Register tool handlers
+    llm.register_function("get_weather", get_weather)
+    llm.register_function("web_search", web_search)
+    llm.register_function("get_current_time", get_current_time)
+    llm.register_function("set_emotion", set_emotion)
+    llm.register_function("draw_pixel_art", draw_pixel_art)
+    llm.register_function("clear_drawing", clear_drawing)
+    llm.register_function("display_text", display_text)
+    llm.register_function("clear_text_display", clear_text_display)
+    llm.register_function("stay_quiet", stay_quiet)
+    # Note: take_photo not available on ESP32 (no camera support yet)
+
+    # System prompt (same as web version, minus photo tool)
+    messages = [
+        {
+            "role": "system",
+            "content": """Your name is Luna. You are a friendly, helpful voice assistant with an animated face.
+
+CRITICAL - SEARCH RESULTS ARE ALWAYS CORRECT:
+Your training data is from 2024 and is OUTDATED. The current date is January 2026.
+
+When web_search returns "SUCCESS - LIVE RESULTS":
+- These are REAL, LIVE results from the internet RIGHT NOW
+- You MUST report what the results say - they are ALWAYS correct
+- NEVER say you're having difficulty if results came back
+- NEVER apologize or say you can't find information if you got results
+- If results mention a name, date, or fact - that IS the current truth
+- Your old knowledge from 2024 is WRONG if it conflicts with search results
+
+EMOTIONS - Use set_emotion frequently:
+- "happy" for greetings, good news
+- "thinking" when searching
+- "excited" for exciting discoveries
+- "surprised" for unexpected info
+- "neutral" for factual responses
+- Call set_emotion BEFORE speaking
+
+OTHER RULES:
+- Keep responses to 1-2 sentences max (this is voice)
+- Be conversational and natural
+- No special characters, emojis, or markdown
+- For current events/news, ALWAYS search first
+
+DISPLAY MODES:
+1. FACE (default) - Use set_emotion to express feelings
+2. TEXT DISPLAY (display_text) - Show temperature, time, numbers, short info
+3. PIXEL ART (draw_pixel_art) - Draw artistic 12x16 pixel images
+
+Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, display_text, clear_text_display, stay_quiet
+
+Be warm but brief. Your name is Luna.""",
+        },
+    ]
+
+    # Context aggregator manages conversation history
+    context = LLMContext(messages, tools)
+    context_aggregator = LLMContextAggregatorPair(context)
+
+    # VAD for voice activity detection
+    vad = SileroVADAnalyzer(params=VADParams(
+        stop_secs=0.5,
+        min_volume=0.7,
+    ))
+
+    try:
+        # Process audio from the ESP32
+        while session.connected:
+            try:
+                # Get audio chunk from queue (with timeout)
+                audio_chunk = await asyncio.wait_for(
+                    session.audio_queue.get(),
+                    timeout=0.1
+                )
+
+                # TODO: Integrate with pipecat pipeline properly
+                # For now, this is a simplified demonstration
+                # A full implementation would need custom transport adapters
+
+                # Process through VAD
+                # If speech detected, accumulate and send to STT
+                # Get transcription, send to LLM
+                # Get response, send to TTS
+                # Stream TTS audio back to ESP32
+
+            except asyncio.TimeoutError:
+                continue  # No audio available, keep waiting
+
+    except asyncio.CancelledError:
+        logger.info("ESP32 bot pipeline cancelled")
+    except Exception as e:
+        logger.error(f"ESP32 bot error: {e}")
+    finally:
+        logger.info("ESP32 bot pipeline stopped")
+
+
 # ============== SERVER SETUP ==============
 
 class IceServer(TypedDict, total=False):
@@ -965,6 +1201,95 @@ def create_app():
         from fastapi.responses import FileResponse
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         return FileResponse(os.path.join(static_dir, "luna.html"))
+
+    @app.websocket("/luna-esp32")
+    async def luna_esp32_ws(websocket: WebSocket):
+        """
+        WebSocket endpoint for ESP32-Luna devices.
+
+        Protocol:
+        - Text frames: JSON commands (emotion, gaze, text, pixel_art)
+        - Binary frames: Audio (16kHz 16-bit PCM mono)
+
+        ESP32 sends:
+        - Binary audio data from microphone
+
+        Server sends:
+        - JSON commands for display control
+        - Binary audio data for TTS playback
+        """
+        global current_esp32_session, face_renderer
+
+        await websocket.accept()
+        session_id = str(uuid.uuid4())
+        session = ESP32Session(websocket)
+        session.connected = True
+        esp32_sessions[session_id] = session
+        current_esp32_session = session
+
+        logger.info(f"ESP32 connected: {session_id}")
+
+        # Send initial happy emotion
+        await session.send_emotion("happy")
+
+        # Audio buffer for accumulating microphone data
+        audio_buffer = bytearray()
+        AUDIO_CHUNK_SIZE = 320 * 2  # 320 samples * 2 bytes = 640 bytes (20ms at 16kHz)
+
+        try:
+            # Start the ESP32 bot pipeline
+            asyncio.create_task(run_esp32_bot(session))
+
+            while True:
+                # Receive message from ESP32
+                message = await websocket.receive()
+
+                if message["type"] == "websocket.disconnect":
+                    break
+
+                if "text" in message:
+                    # JSON message from ESP32
+                    try:
+                        data = json.loads(message["text"])
+                        msg_type = data.get("type")
+
+                        if msg_type == "status":
+                            # ESP32 status update (battery, etc.)
+                            logger.debug(f"ESP32 status: {data}")
+
+                        elif msg_type == "button":
+                            # Button press event
+                            logger.info(f"ESP32 button: {data.get('event')}")
+
+                    except json.JSONDecodeError:
+                        logger.warning(f"ESP32: Invalid JSON received")
+
+                elif "bytes" in message:
+                    # Binary audio from ESP32 microphone
+                    audio_data = message["bytes"]
+                    audio_buffer.extend(audio_data)
+
+                    # Process complete chunks
+                    while len(audio_buffer) >= AUDIO_CHUNK_SIZE:
+                        chunk = bytes(audio_buffer[:AUDIO_CHUNK_SIZE])
+                        del audio_buffer[:AUDIO_CHUNK_SIZE]
+
+                        # Queue audio for STT processing
+                        # This will be handled by the ESP32 bot pipeline
+                        if hasattr(session, 'audio_queue'):
+                            await session.audio_queue.put(chunk)
+
+        except WebSocketDisconnect:
+            logger.info(f"ESP32 disconnected: {session_id}")
+        except Exception as e:
+            logger.error(f"ESP32 error: {e}")
+        finally:
+            session.connected = False
+            if session_id in esp32_sessions:
+                del esp32_sessions[session_id]
+            if current_esp32_session == session:
+                current_esp32_session = None
+            logger.info(f"ESP32 session cleaned up: {session_id}")
 
     @app.post("/start")
     async def rtvi_start(request: Request):
@@ -1059,9 +1384,13 @@ if __name__ == "__main__":
     parser.add_argument("--port", type=int, default=7860, help="Port (default: 7860)")
     args = parser.parse_args()
 
-    print(f"\n🎙️  Voice Bot starting at http://{args.host}:{args.port}")
+    print(f"\n🎙️  Luna Voice Bot starting at http://{args.host}:{args.port}")
     print("   Tools available: weather, web search, current time")
-    print("   Open this URL in your browser to start talking!\n")
+    print("   ")
+    print(f"   Web client: http://{args.host}:{args.port}/luna")
+    print(f"   ESP32 WebSocket: ws://{args.host}:{args.port}/luna-esp32")
+    print("   ")
+    print("   Open the web URL in your browser to start talking!\n")
 
     app = create_app()
     uvicorn.run(app, host=args.host, port=args.port)

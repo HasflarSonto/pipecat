@@ -378,6 +378,12 @@ static void update_face_widgets(void)
         curve_category = -1;   // Frown
     }
 
+    // Debug: log when curve changes
+    if (curve_category != s_renderer.last_mouth_curve) {
+        ESP_LOGI(TAG, "Mouth: cat=%d open=%.2f curve=%.2f -> category=%d",
+                 params->cat_face, params->mouth_open, params->mouth_curve, curve_category);
+    }
+
     if (curve_category != s_renderer.last_mouth_curve) {
         // Invalidate old mouth areas before hiding (prevents artifacts)
         lv_obj_invalidate(s_renderer.mouth_arc);
@@ -510,9 +516,9 @@ static void render_task_func(void *pvParameters)
                     update_face_widgets();
 
                     // Periodic full-screen invalidation to clear artifacts
-                    // Every ~0.6 seconds (10 frames at 15fps) - more aggressive
+                    // Every ~2 seconds (30 frames at 15fps)
                     s_renderer.invalidate_counter++;
-                    if (s_renderer.invalidate_counter >= 10) {
+                    if (s_renderer.invalidate_counter >= 30) {
                         s_renderer.invalidate_counter = 0;
                         lv_obj_t *scr = lv_scr_act();
                         lv_obj_invalidate(scr);
@@ -813,20 +819,10 @@ void face_renderer_set_emotion(emotion_id_t emotion)
         s_renderer.target_emotion = emotion;
         s_renderer.emotion_transition = 0.0f;
 
-        // Force full screen invalidation on emotion change to prevent artifacts
+        // Force widget state recheck on emotion change
         s_renderer.last_mouth_curve = -1000;  // Force mouth redraw
-        s_renderer.last_sparkle = !s_renderer.last_sparkle;  // Force sparkle check
-        s_renderer.last_angry_brows = !s_renderer.last_angry_brows;  // Force brow check
 
         xSemaphoreGive(s_renderer.mutex);
-
-        // Invalidate entire screen
-        if (bsp_display_lock(pdMS_TO_TICKS(50))) {
-            lv_obj_t *scr = lv_scr_act();
-            lv_obj_invalidate(scr);
-            bsp_display_unlock();
-        }
-
         ESP_LOGI(TAG, "Emotion set to: %s", emotion_to_string(emotion));
     }
 }
