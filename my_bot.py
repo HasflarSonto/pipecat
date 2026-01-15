@@ -27,7 +27,11 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMRunFrame, TranscriptionFrame, Frame, StartFrame, EndFrame, SystemFrame
+from pipecat.frames.frames import (
+    LLMRunFrame, TranscriptionFrame, Frame, StartFrame, EndFrame, SystemFrame,
+    AudioRawFrame, TTSStartedFrame, TTSStoppedFrame, TTSAudioRawFrame,
+    UserStartedSpeakingFrame, UserStoppedSpeakingFrame
+)
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -235,6 +239,172 @@ class ESP32Session:
 # Active ESP32 sessions
 esp32_sessions: Dict[str, ESP32Session] = {}
 current_esp32_session: Optional[ESP32Session] = None
+
+
+# ============== ESP32 TRANSPORT PROCESSORS ==============
+
+from pipecat.frames.frames import VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame
+from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADState
+
+
+class ESP32AudioInputProcessor(FrameProcessor):
+    """
+    Processor that takes audio from ESP32 WebSocket and emits AudioRawFrames.
+    This bridges the WebSocket audio input to the pipecat pipeline.
+    Includes VAD for voice activity detection.
+    """
+
+    def __init__(self, session: "ESP32Session", sample_rate: int = 16000, vad_analyzer: Optional[VADAnalyzer] = None):
+        super().__init__()
+        self.session = session
+        self.sample_rate = sample_rate
+        self.vad_analyzer = vad_analyzer
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        self._user_speaking = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await self.push_frame(frame, direction)
+
+        # Start the audio reader task when we receive StartFrame
+        if isinstance(frame, StartFrame):
+            self._running = True
+            # Configure VAD with sample rate
+            if self.vad_analyzer:
+                self.vad_analyzer.set_sample_rate(self.sample_rate)
+            self._task = asyncio.create_task(self._audio_reader_task())
+
+        # Stop when we receive EndFrame
+        if isinstance(frame, EndFrame):
+            self._running = False
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+
+    async def _audio_reader_task(self):
+        """Background task that reads audio from the session queue and pushes frames."""
+        logger.info("ESP32 audio input task started")
+        try:
+            while self._running and self.session.connected:
+                try:
+                    # Get audio chunk from queue (with timeout)
+                    audio_chunk = await asyncio.wait_for(
+                        self.session.audio_queue.get(),
+                        timeout=0.1
+                    )
+
+                    # Run VAD analysis if available
+                    if self.vad_analyzer:
+                        vad_state = await self.vad_analyzer.analyze_audio(audio_chunk)
+
+                        # Emit VAD frames on state changes
+                        if vad_state == VADState.SPEAKING and not self._user_speaking:
+                            self._user_speaking = True
+                            logger.debug("ESP32: User started speaking")
+                            await self.push_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+                        elif vad_state == VADState.QUIET and self._user_speaking:
+                            self._user_speaking = False
+                            logger.debug("ESP32: User stopped speaking")
+                            await self.push_frame(VADUserStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+
+                    # Create AudioRawFrame from the PCM data
+                    # ESP32 sends 16kHz 16-bit mono PCM
+                    audio_frame = AudioRawFrame(
+                        audio=audio_chunk,
+                        sample_rate=self.sample_rate,
+                        num_channels=1
+                    )
+
+                    # Push the audio frame downstream
+                    await self.push_frame(audio_frame, FrameDirection.DOWNSTREAM)
+
+                except asyncio.TimeoutError:
+                    continue  # No audio available, keep waiting
+                except Exception as e:
+                    logger.error(f"ESP32 audio input error: {e}")
+                    break
+
+        except asyncio.CancelledError:
+            pass
+        finally:
+            logger.info("ESP32 audio input task stopped")
+
+
+class ESP32AudioOutputProcessor(FrameProcessor):
+    """
+    Processor that captures TTS audio frames and sends them to the ESP32.
+    This bridges the pipecat TTS output to the WebSocket.
+    """
+
+    def __init__(self, session: "ESP32Session", target_sample_rate: int = 16000):
+        super().__init__()
+        self.session = session
+        self.target_sample_rate = target_sample_rate
+        self._tts_active = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        # Pass all frames through
+        await self.push_frame(frame, direction)
+
+        # Handle TTS lifecycle frames
+        if isinstance(frame, TTSStartedFrame):
+            self._tts_active = True
+            await self.session.send_audio_start()
+            logger.debug("ESP32: TTS started")
+
+        elif isinstance(frame, TTSStoppedFrame):
+            self._tts_active = False
+            await self.session.send_audio_stop()
+            logger.debug("ESP32: TTS stopped")
+
+        # Capture TTS audio and send to ESP32
+        elif isinstance(frame, TTSAudioRawFrame):
+            if self.session.connected:
+                # TTS audio might be at different sample rate (e.g., 24kHz)
+                # Resample to 16kHz for ESP32 if needed
+                audio_data = frame.audio
+
+                if frame.sample_rate != self.target_sample_rate:
+                    # Simple resample by skipping/duplicating samples
+                    # For production, use proper resampling library
+                    audio_data = self._resample_audio(
+                        frame.audio,
+                        frame.sample_rate,
+                        self.target_sample_rate
+                    )
+
+                # Send audio to ESP32
+                await self.session.send_audio(audio_data)
+
+    def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
+        """Simple audio resampling (linear interpolation)."""
+        import struct
+
+        # Unpack samples
+        sample_count = len(audio) // 2
+        samples = struct.unpack(f'<{sample_count}h', audio)
+
+        # Calculate new sample count
+        ratio = to_rate / from_rate
+        new_count = int(sample_count * ratio)
+
+        # Resample using linear interpolation
+        resampled = []
+        for i in range(new_count):
+            src_idx = i / ratio
+            idx_floor = int(src_idx)
+            idx_ceil = min(idx_floor + 1, sample_count - 1)
+            frac = src_idx - idx_floor
+
+            # Linear interpolation
+            sample = int(samples[idx_floor] * (1 - frac) + samples[idx_ceil] * frac)
+            resampled.append(sample)
+
+        # Pack back to bytes
+        return struct.pack(f'<{len(resampled)}h', *resampled)
 
 
 # ============== TOOL IMPLEMENTATIONS ==============
@@ -1032,13 +1202,23 @@ Be warm but brief. Your name is Luna.""",
 async def run_esp32_bot(session: ESP32Session):
     """
     Run the pipecat pipeline for an ESP32 client.
-    This is a simplified pipeline without WebRTC transport.
-    Audio comes from WebSocket binary frames and goes out the same way.
+    Audio flows: ESP32 WebSocket → STT → LLM → TTS → ESP32 WebSocket
     """
+    global current_esp32_session
     logger.info("Starting ESP32 bot pipeline")
 
     # Create an audio queue for the session
     session.audio_queue = asyncio.Queue()
+
+    # VAD for voice activity detection
+    vad_analyzer = SileroVADAnalyzer(params=VADParams(
+        stop_secs=0.5,    # Wait before considering speech stopped
+        min_volume=0.6,   # Minimum volume threshold
+    ))
+
+    # Create ESP32 transport processors
+    esp32_audio_input = ESP32AudioInputProcessor(session, sample_rate=16000, vad_analyzer=vad_analyzer)
+    esp32_audio_output = ESP32AudioOutputProcessor(session, target_sample_rate=16000)
 
     # Speech-to-Text: OpenAI (Whisper)
     stt = OpenAISTTService(
@@ -1046,10 +1226,11 @@ async def run_esp32_bot(session: ESP32Session):
         model="gpt-4o-transcribe",
     )
 
-    # Text-to-Speech: OpenAI
+    # Text-to-Speech: OpenAI (16kHz for ESP32 compatibility)
     tts = OpenAITTSService(
         api_key=os.getenv("OPENAI_API_KEY"),
         voice="nova",
+        sample_rate=16000,  # Match ESP32's expected sample rate
     )
 
     # LLM: Anthropic Claude (using Haiku for speed)
@@ -1070,11 +1251,17 @@ async def run_esp32_bot(session: ESP32Session):
     llm.register_function("stay_quiet", stay_quiet)
     # Note: take_photo not available on ESP32 (no camera support yet)
 
+    # ESP32 tools list (without photo tool)
+    esp32_tools = ToolsSchema(standard_tools=[
+        weather_tool, search_tool, time_tool, emotion_tool,
+        draw_tool, clear_draw_tool, display_text_tool, clear_text_tool, stay_quiet_tool
+    ])
+
     # System prompt (same as web version, minus photo tool)
     messages = [
         {
             "role": "system",
-            "content": """Your name is Luna. You are a friendly, helpful voice assistant with an animated face.
+            "content": """Your name is Luna. You are a friendly, helpful voice assistant with an animated face on an ESP32 device.
 
 CRITICAL - SEARCH RESULTS ARE ALWAYS CORRECT:
 Your training data is from 2024 and is OUTDATED. The current date is January 2026.
@@ -1113,44 +1300,58 @@ Be warm but brief. Your name is Luna.""",
     ]
 
     # Context aggregator manages conversation history
-    context = LLMContext(messages, tools)
+    context = LLMContext(messages, esp32_tools)
     context_aggregator = LLMContextAggregatorPair(context)
 
-    # VAD for voice activity detection
-    vad = SileroVADAnalyzer(params=VADParams(
-        stop_secs=0.5,
-        min_volume=0.7,
-    ))
+    # Build the pipeline for ESP32
+    # Audio Input (with VAD) → STT → Context → LLM → TTS → Audio Output
+    pipeline = Pipeline(
+        [
+            esp32_audio_input,           # Reads audio from ESP32 WebSocket (includes VAD)
+            stt,                         # Speech-to-Text
+            context_aggregator.user(),   # Manage user context
+            llm,                         # LLM processing
+            tts,                         # Text-to-Speech
+            esp32_audio_output,          # Sends audio to ESP32 WebSocket
+            context_aggregator.assistant(),  # Manage assistant context
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            audio_in_sample_rate=16000,   # ESP32 sends 16kHz audio
+            audio_out_sample_rate=16000,  # ESP32 expects 16kHz audio
+            enable_metrics=True,
+        ),
+    )
+
+    # Store task reference for tool handlers
+    global current_task
+    current_task = task
+
+    runner = PipelineRunner(handle_sigint=False)
 
     try:
-        # Process audio from the ESP32
-        while session.connected:
-            try:
-                # Get audio chunk from queue (with timeout)
-                audio_chunk = await asyncio.wait_for(
-                    session.audio_queue.get(),
-                    timeout=0.1
-                )
+        logger.info("ESP32 pipeline starting")
 
-                # TODO: Integrate with pipecat pipeline properly
-                # For now, this is a simplified demonstration
-                # A full implementation would need custom transport adapters
+        # Queue initial greeting - will be processed when pipeline starts
+        context.messages.append({"role": "user", "content": "Hello!"})
+        await task.queue_frames([LLMRunFrame()])
 
-                # Process through VAD
-                # If speech detected, accumulate and send to STT
-                # Get transcription, send to LLM
-                # Get response, send to TTS
-                # Stream TTS audio back to ESP32
-
-            except asyncio.TimeoutError:
-                continue  # No audio available, keep waiting
+        # Run the pipeline (blocks until task completes)
+        await runner.run(task)
 
     except asyncio.CancelledError:
         logger.info("ESP32 bot pipeline cancelled")
     except Exception as e:
         logger.error(f"ESP32 bot error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         logger.info("ESP32 bot pipeline stopped")
+        if current_esp32_session == session:
+            current_esp32_session = None
 
 
 # ============== SERVER SETUP ==============
