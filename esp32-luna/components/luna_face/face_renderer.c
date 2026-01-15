@@ -156,6 +156,9 @@ static struct {
     bool last_angry_brows;
     bool last_sparkle;
 
+    // Full screen invalidation counter (to clear artifacts)
+    int invalidate_counter;
+
     // Mutex for thread safety
     SemaphoreHandle_t mutex;
 } s_renderer = {0};
@@ -331,8 +334,12 @@ static void update_face_widgets(void)
 
     // Update sparkles
     if (params->sparkle != s_renderer.last_sparkle) {
+        // Invalidate before hiding to prevent artifacts
+        lv_obj_invalidate(s_renderer.left_sparkle);
+        lv_obj_invalidate(s_renderer.right_sparkle);
+
         if (params->sparkle) {
-            int sparkle_size = (int)(8 * SCALE_X);
+            int sparkle_size = (int)(10 * SCALE_X);  // Slightly larger
             lv_obj_set_size(s_renderer.left_sparkle, sparkle_size, sparkle_size);
             lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
             lv_obj_remove_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
@@ -372,23 +379,31 @@ static void update_face_widgets(void)
     }
 
     if (curve_category != s_renderer.last_mouth_curve) {
+        // Invalidate old mouth areas before hiding (prevents artifacts)
+        lv_obj_invalidate(s_renderer.mouth_arc);
+        lv_obj_invalidate(s_renderer.mouth_line);
+
         // Hide all mouth objects first
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
 
+        // Mouth sizes increased for better visibility
+        int arc_size = (int)(mouth_width * 2.5f);  // Increased from 2x
+
         if (curve_category == 100) {
-            // Cat mouth - use a smile arc
-            int arc_size = mouth_width * 2;
+            // Cat mouth - very wide, shallow smile (cat-like :3)
+            int cat_width = (int)(mouth_width * 3.5f);  // Extra wide
+            int cat_height = (int)(mouth_width * 0.8f); // Very shallow
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);  // Bottom half
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
             lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/4);
+            lv_obj_set_size(s_renderer.mouth_arc, cat_width, cat_height);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - cat_width/2, mouth_y - cat_height/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 50) {
             // O-shaped surprised mouth - full circle
-            int o_size = (int)((36.0f + params->mouth_open * 36.0f) * SCALE_X);
+            int o_size = (int)((40.0f + params->mouth_open * 40.0f) * SCALE_X);
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 360);
@@ -397,15 +412,16 @@ static void update_face_widgets(void)
             lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - o_size/2, mouth_y - o_size/2);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 0) {
-            // Straight line mouth
-            lv_obj_set_size(s_renderer.mouth_line, mouth_width * 2, line_width);
-            lv_obj_set_pos(s_renderer.mouth_line, mouth_x - mouth_width, mouth_y - line_width/2);
+            // Straight line mouth - wider and thicker for visibility
+            int line_len = (int)(mouth_width * 3.0f);  // Wider
+            int thick_line = line_width + 2;           // Slightly thicker
+            lv_obj_set_size(s_renderer.mouth_line, line_len, thick_line);
+            lv_obj_set_pos(s_renderer.mouth_line, mouth_x - line_len/2, mouth_y - thick_line/2);
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 1) {
-            // Smile - arc from 0 to 180 (bottom half)
-            int curve_amount = (int)(fabsf(params->mouth_curve) * 40.0f * SCALE_Y);
-            if (curve_amount < 20) curve_amount = 20;
-            int arc_size = mouth_width * 2;
+            // Smile - arc from 0 to 180 (bottom half), bigger
+            int curve_amount = (int)(fabsf(params->mouth_curve) * 60.0f * SCALE_Y);
+            if (curve_amount < 40) curve_amount = 40;
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
@@ -414,10 +430,9 @@ static void update_face_widgets(void)
             lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - curve_amount/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else {
-            // Frown - arc from 180 to 360 (top half)
-            int curve_amount = (int)(fabsf(params->mouth_curve) * 40.0f * SCALE_Y);
-            if (curve_amount < 20) curve_amount = 20;
-            int arc_size = mouth_width * 2;
+            // Frown - arc from 180 to 360 (top half), bigger
+            int curve_amount = (int)(fabsf(params->mouth_curve) * 60.0f * SCALE_Y);
+            if (curve_amount < 40) curve_amount = 40;
             lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
             lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
@@ -432,6 +447,10 @@ static void update_face_widgets(void)
 
     // Update angry brows
     if (params->angry_brows != s_renderer.last_angry_brows) {
+        // Invalidate before hiding to prevent artifacts
+        lv_obj_invalidate(s_renderer.left_brow);
+        lv_obj_invalidate(s_renderer.right_brow);
+
         if (params->angry_brows) {
             int brow_y = s_renderer.eye_base_y - (int)(40.0f * SCALE_Y) + offset_y;
             int brow_length = (int)(35.0f * SCALE_X);
@@ -492,6 +511,16 @@ static void render_task_func(void *pvParameters)
                 // Update face widgets
                 if (bsp_display_lock(pdMS_TO_TICKS(50))) {
                     update_face_widgets();
+
+                    // Periodic full-screen invalidation to clear artifacts
+                    // Every ~2 seconds (30 frames at 15fps)
+                    s_renderer.invalidate_counter++;
+                    if (s_renderer.invalidate_counter >= 30) {
+                        s_renderer.invalidate_counter = 0;
+                        lv_obj_t *scr = lv_scr_act();
+                        lv_obj_invalidate(scr);
+                    }
+
                     bsp_display_unlock();
                 }
             }
