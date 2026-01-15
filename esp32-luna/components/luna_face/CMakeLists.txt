@@ -1,0 +1,13 @@
+idf_component_register(
+    SRCS
+        "emotions.c"
+        "face_renderer.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp32_s3_touch_amoled_2_06
+        lvgl
+        freertos
+        log
+        esp_timer
+)

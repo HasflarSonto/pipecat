@@ -1,0 +1,16 @@
+idf_component_register(
+    SRCS
+        "main.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        freertos
+        esp_system
+        esp_event
+        nvs_flash
+        log
+        network
+        audio
+        luna_face
+        power
+)

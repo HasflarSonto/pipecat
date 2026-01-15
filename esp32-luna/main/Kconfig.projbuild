@@ -1,0 +1,27 @@
+menu "Luna Configuration"
+
+    config LUNA_WIFI_SSID
+        string "WiFi SSID"
+        default "your_wifi_ssid"
+        help
+            WiFi network name to connect to.
+
+    config LUNA_WIFI_PASSWORD
+        string "WiFi Password"
+        default "your_wifi_password"
+        help
+            WiFi network password.
+
+    config LUNA_SERVER_IP
+        string "Pipecat Server IP"
+        default "192.168.1.100"
+        help
+            IP address of the computer running my_bot.py.
+
+    config LUNA_SERVER_PORT
+        int "Pipecat Server Port"
+        default 7860
+        help
+            WebSocket port for the Pipecat server.
+
+endmenu

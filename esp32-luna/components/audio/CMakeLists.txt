@@ -1,0 +1,14 @@
+idf_component_register(
+    SRCS
+        "audio_manager.c"
+        "audio_capture.c"
+        "audio_playback.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp32_s3_touch_amoled_2_06
+        esp_codec_dev
+        driver
+        freertos
+        log
+)

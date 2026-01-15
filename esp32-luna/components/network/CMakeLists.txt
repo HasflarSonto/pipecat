@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "wifi_manager.c"
+        "ws_client.c"
+        "luna_protocol.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp_wifi
+        esp_netif
+        esp_event
+        nvs_flash
+        esp_websocket_client
+        json
+        freertos
+        log
+)

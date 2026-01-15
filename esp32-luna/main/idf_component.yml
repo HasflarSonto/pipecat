@@ -1,0 +1,21 @@
+## IDF Component Manager Manifest File
+dependencies:
+  # Waveshare ESP32-S3-Touch-AMOLED-2.06 BSP
+  waveshare/esp32_s3_touch_amoled_2_06:
+    version: "*"
+
+  # LVGL Graphics Library
+  lvgl/lvgl:
+    version: "^9.2.0"
+
+  # ESP WebSocket Client
+  espressif/esp_websocket_client:
+    version: "*"
+
+  # ESP Codec Device (for audio)
+  espressif/esp_codec_dev:
+    version: "*"
+
+  # ESP LVGL Port
+  espressif/esp_lvgl_port:
+    version: "*"
