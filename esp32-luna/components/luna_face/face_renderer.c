@@ -510,9 +510,9 @@ static void render_task_func(void *pvParameters)
                     update_face_widgets();
 
                     // Periodic full-screen invalidation to clear artifacts
-                    // Every ~2 seconds (30 frames at 15fps)
+                    // Every ~0.6 seconds (10 frames at 15fps) - more aggressive
                     s_renderer.invalidate_counter++;
-                    if (s_renderer.invalidate_counter >= 30) {
+                    if (s_renderer.invalidate_counter >= 10) {
                         s_renderer.invalidate_counter = 0;
                         lv_obj_t *scr = lv_scr_act();
                         lv_obj_invalidate(scr);
@@ -812,7 +812,21 @@ void face_renderer_set_emotion(emotion_id_t emotion)
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         s_renderer.target_emotion = emotion;
         s_renderer.emotion_transition = 0.0f;
+
+        // Force full screen invalidation on emotion change to prevent artifacts
+        s_renderer.last_mouth_curve = -1000;  // Force mouth redraw
+        s_renderer.last_sparkle = !s_renderer.last_sparkle;  // Force sparkle check
+        s_renderer.last_angry_brows = !s_renderer.last_angry_brows;  // Force brow check
+
         xSemaphoreGive(s_renderer.mutex);
+
+        // Invalidate entire screen
+        if (bsp_display_lock(pdMS_TO_TICKS(50))) {
+            lv_obj_t *scr = lv_scr_act();
+            lv_obj_invalidate(scr);
+            bsp_display_unlock();
+        }
+
         ESP_LOGI(TAG, "Emotion set to: %s", emotion_to_string(emotion));
     }
 }
