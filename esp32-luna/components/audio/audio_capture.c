@@ -77,7 +77,12 @@ static void capture_task(void *pvParameters)
         if (s_ringbuf) {
             BaseType_t sent = xRingbufferSend(s_ringbuf, output_buffer, output_size, 0);
             if (sent != pdTRUE) {
-                ESP_LOGW(TAG, "Ring buffer full, dropping audio");
+                // Throttle warning to reduce log spam
+                static int drop_count = 0;
+                if (++drop_count >= 100) {
+                    ESP_LOGW(TAG, "Ring buffer full, dropped %d chunks", drop_count);
+                    drop_count = 0;
+                }
             }
         }
 
