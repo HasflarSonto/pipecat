@@ -206,10 +206,17 @@ static void create_face_widgets(lv_obj_t *parent)
     // Mouth arc (for smile/frown)
     s_renderer.mouth_arc = lv_arc_create(parent);
     lv_obj_remove_style_all(s_renderer.mouth_arc);
-    lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
+    // Hide background arc
+    lv_obj_set_style_arc_width(s_renderer.mouth_arc, 0, LV_PART_MAIN);
+    // Style the indicator arc (the visible part)
     lv_obj_set_style_arc_color(s_renderer.mouth_arc, face_color, LV_PART_INDICATOR);
     lv_obj_set_style_arc_width(s_renderer.mouth_arc, (int)(6 * SCALE_Y), LV_PART_INDICATOR);
     lv_obj_set_style_arc_rounded(s_renderer.mouth_arc, true, LV_PART_INDICATOR);
+    // Hide knob
+    lv_obj_set_style_pad_all(s_renderer.mouth_arc, 0, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(s_renderer.mouth_arc, LV_OPA_TRANSP, LV_PART_KNOB);
+    // Set arc mode to normal (not rotated)
+    lv_arc_set_mode(s_renderer.mouth_arc, LV_ARC_MODE_NORMAL);
     lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
 
     // Mouth line (for neutral/straight)
@@ -370,17 +377,24 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
 
         if (curve_category == 100) {
-            // Cat mouth - just use a simple curved mouth for now
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, mouth_width * 2, mouth_width);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - mouth_width, mouth_y - mouth_width/4);
+            // Cat mouth - use a smile arc
+            int arc_size = mouth_width * 2;
+            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
+            lv_arc_set_value(s_renderer.mouth_arc, 100);
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);  // Bottom half
+            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 50) {
-            // O-shaped surprised mouth
-            int o_radius = (int)((18.0f + params->mouth_open * 18.0f) * SCALE_X);
+            // O-shaped surprised mouth - full circle
+            int o_size = (int)((36.0f + params->mouth_open * 36.0f) * SCALE_X);
+            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
+            lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 360);
-            lv_obj_set_size(s_renderer.mouth_arc, o_radius * 2, o_radius * 2);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - o_radius, mouth_y - o_radius);
+            lv_arc_set_angles(s_renderer.mouth_arc, 0, 360);
+            lv_obj_set_size(s_renderer.mouth_arc, o_size, o_size);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - o_size/2, mouth_y - o_size/2);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 0) {
             // Straight line mouth
@@ -388,20 +402,28 @@ static void update_face_widgets(void)
             lv_obj_set_pos(s_renderer.mouth_line, mouth_x - mouth_width, mouth_y - line_width/2);
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         } else if (curve_category == 1) {
-            // Smile
+            // Smile - arc from 0 to 180 (bottom half)
             int curve_amount = (int)(fabsf(params->mouth_curve) * 40.0f * SCALE_Y);
-            if (curve_amount < 15) curve_amount = 15;
+            if (curve_amount < 20) curve_amount = 20;
+            int arc_size = mouth_width * 2;
+            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
+            lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
-            lv_obj_set_size(s_renderer.mouth_arc, mouth_width * 2, curve_amount * 2);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - mouth_width, mouth_y - curve_amount);
+            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, curve_amount);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - curve_amount/4);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         } else {
-            // Frown
+            // Frown - arc from 180 to 360 (top half)
             int curve_amount = (int)(fabsf(params->mouth_curve) * 40.0f * SCALE_Y);
-            if (curve_amount < 15) curve_amount = 15;
+            if (curve_amount < 20) curve_amount = 20;
+            int arc_size = mouth_width * 2;
+            lv_arc_set_range(s_renderer.mouth_arc, 0, 100);
+            lv_arc_set_value(s_renderer.mouth_arc, 100);
             lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
-            lv_obj_set_size(s_renderer.mouth_arc, mouth_width * 2, curve_amount * 2);
-            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - mouth_width, mouth_y - curve_amount/2);
+            lv_arc_set_angles(s_renderer.mouth_arc, 180, 360);
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, curve_amount);
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - curve_amount/2);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
         }
 
@@ -612,9 +634,10 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
         return ESP_FAIL;
     }
 
-    // Rotate display 90 degrees clockwise for landscape mode
-    ESP_LOGI(TAG, "Rotating display 90 degrees clockwise...");
-    bsp_display_rotate(s_renderer.display, LV_DISPLAY_ROTATION_90);
+    // Rotate display 270 degrees (or 90 counter-clockwise) for landscape mode
+    // This puts the USB port on the left side when viewing
+    ESP_LOGI(TAG, "Rotating display 270 degrees...");
+    bsp_display_rotate(s_renderer.display, LV_DISPLAY_ROTATION_270);
 
     bsp_display_backlight_on();
 
