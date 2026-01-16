@@ -375,13 +375,15 @@ static void update_face_widgets(void)
         ESP_LOGI(TAG, "Mouth curve changed: %d -> %d (mouth_curve=%.2f)",
                  s_renderer.last_mouth_curve, curve_category, params->mouth_curve);
 
-        // Hide all mouth widgets first
+        // Hide all mouth widgets first (simple hide - no invalidation to avoid artifacts)
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+
         for (int i = 0; i < 5; i++) {
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
         }
 
-        // Hide whiskers by default
+        // Hide whiskers
         for (int i = 0; i < 6; i++) {
             lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
         }
@@ -402,14 +404,15 @@ static void update_face_widgets(void)
                 lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
             }
 
-            // Show whiskers with fan-out angle effect
+            // Show whiskers - simple horizontal lines (no rotation to avoid invalidation issues)
             int whisker_len = (int)(50 * SCALE_X);
             int whisker_h = (int)(3 * SCALE_Y);
             int whisker_x_start = (int)(45 * SCALE_X);
+            int whisker_spacing = (int)(12 * SCALE_Y);  // Vertical spacing between whiskers
 
-            // Left whiskers - fan out (top high, middle level, bottom low)
+            // Left whiskers - three horizontal lines fanning out vertically
             lv_obj_set_size(s_renderer.whisker_rects[0], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[0], mouth_x - whisker_x_start - whisker_len, cat_y - (int)(18 * SCALE_Y));
+            lv_obj_set_pos(s_renderer.whisker_rects[0], mouth_x - whisker_x_start - whisker_len, cat_y - whisker_spacing);
             lv_obj_remove_flag(s_renderer.whisker_rects[0], LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_set_size(s_renderer.whisker_rects[1], whisker_len, whisker_h);
@@ -417,12 +420,12 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.whisker_rects[1], LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_set_size(s_renderer.whisker_rects[2], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[2], mouth_x - whisker_x_start - whisker_len, cat_y + (int)(18 * SCALE_Y));
+            lv_obj_set_pos(s_renderer.whisker_rects[2], mouth_x - whisker_x_start - whisker_len, cat_y + whisker_spacing);
             lv_obj_remove_flag(s_renderer.whisker_rects[2], LV_OBJ_FLAG_HIDDEN);
 
-            // Right whiskers - mirrored fan out
+            // Right whiskers - mirrored
             lv_obj_set_size(s_renderer.whisker_rects[3], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[3], mouth_x + whisker_x_start, cat_y - (int)(18 * SCALE_Y));
+            lv_obj_set_pos(s_renderer.whisker_rects[3], mouth_x + whisker_x_start, cat_y - whisker_spacing);
             lv_obj_remove_flag(s_renderer.whisker_rects[3], LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_set_size(s_renderer.whisker_rects[4], whisker_len, whisker_h);
@@ -430,10 +433,10 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.whisker_rects[4], LV_OBJ_FLAG_HIDDEN);
 
             lv_obj_set_size(s_renderer.whisker_rects[5], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[5], mouth_x + whisker_x_start, cat_y + (int)(18 * SCALE_Y));
+            lv_obj_set_pos(s_renderer.whisker_rects[5], mouth_x + whisker_x_start, cat_y + whisker_spacing);
             lv_obj_remove_flag(s_renderer.whisker_rects[5], LV_OBJ_FLAG_HIDDEN);
 
-            ESP_LOGI(TAG, "Cat mouth :3 (5 dots W) at y=%d with fanned whiskers", cat_y);
+            ESP_LOGI(TAG, "Cat mouth :3 (5 dots W) at y=%d with whiskers", cat_y);
 
         } else if (curve_category == 50) {
             // Surprised O - circular mouth using mouth_line
@@ -454,42 +457,31 @@ static void update_face_widgets(void)
             ESP_LOGI(TAG, "Neutral mouth at y=%d, len=%d", mouth_y, line_len);
 
         } else if (curve_category == 1) {
-            // Smile - 5 dots in U curve (ends high, middle low)
-            int dot_size = (int)(12 * SCALE_X);
-            int smile_width = (int)(mouth_width * 2.2f);
-            int curve_depth = (int)(22 * SCALE_Y);
-
-            // Parabolic Y offsets: high at edges, low in middle
-            for (int i = 0; i < 5; i++) {
-                float t = (float)i / 4.0f;  // 0 to 1
-                int x = mouth_x - smile_width/2 + (int)(smile_width * t);
-                // Parabola: y = depth * 4t(1-t) - curves DOWN in middle
-                float curve_factor = 4.0f * t * (1.0f - t);
-                int y = mouth_y + (int)(curve_depth * curve_factor);
-                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
-                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, y - dot_size/2);
-                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Smile (5 dots U) at y=%d, depth=%d", mouth_y, curve_depth);
+            // Smile - arc curving downward (like a U)
+            // Keep arc size small to avoid SPI overflow (max ~120px)
+            int arc_size = 100;  // Fixed small size
+            int arc_thickness = (int)(6 * SCALE_Y);
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size / 2);  // Half height for shallow curve
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/4);
+            // Smile: arc from 200° to 340° (bottom portion, curves down)
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 200, 340);
+            lv_arc_set_angles(s_renderer.mouth_arc, 200, 340);
+            lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Smile (arc) at y=%d, size=%d", mouth_y, arc_size);
 
         } else {
-            // Frown - 5 dots in inverted U curve (ends low, middle high)
-            int dot_size = (int)(12 * SCALE_X);
-            int frown_width = (int)(mouth_width * 2.2f);
-            int curve_depth = (int)(22 * SCALE_Y);
-
-            // Inverted parabolic Y offsets: low at edges, high in middle
-            for (int i = 0; i < 5; i++) {
-                float t = (float)i / 4.0f;  // 0 to 1
-                int x = mouth_x - frown_width/2 + (int)(frown_width * t);
-                // Inverted parabola: curves UP in middle
-                float curve_factor = 4.0f * t * (1.0f - t);
-                int y = mouth_y - (int)(curve_depth * curve_factor);
-                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
-                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, y - dot_size/2);
-                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
-            }
-            ESP_LOGI(TAG, "Frown (5 dots inverted U) at y=%d, depth=%d", mouth_y, curve_depth);
+            // Frown - arc curving upward (inverted U)
+            int arc_size = 100;  // Fixed small size
+            int arc_thickness = (int)(6 * SCALE_Y);
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size / 2);  // Half height for shallow curve
+            lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/4);
+            // Frown: arc from 20° to 160° (top portion, curves up)
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 20, 160);
+            lv_arc_set_angles(s_renderer.mouth_arc, 20, 160);
+            lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Frown (arc) at y=%d, size=%d", mouth_y, arc_size);
         }
 
         s_renderer.last_mouth_curve = curve_category;
@@ -709,19 +701,26 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     bsp_display_rotate(s_renderer.display, LV_DISPLAY_ROTATION_270);
 
     bsp_display_backlight_on();
+    ESP_LOGI(TAG, "Backlight on, acquiring display lock...");
 
     // Create face widgets
-    bsp_display_lock(0);
+    if (!bsp_display_lock(pdMS_TO_TICKS(5000))) {
+        ESP_LOGE(TAG, "Failed to acquire display lock (timeout)");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Display lock acquired, creating widgets...");
 
     lv_obj_t *scr = lv_scr_act();
     lv_obj_set_style_bg_color(scr, rgb888_to_lv(BG_COLOR), 0);
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
 
     create_face_widgets(scr);
+    ESP_LOGI(TAG, "Face widgets created, refreshing display...");
 
     // Force full-screen refresh to clear any artifacts
     lv_obj_invalidate(scr);
     lv_refr_now(s_renderer.display);
+    ESP_LOGI(TAG, "Display refreshed, creating text label...");
 
     // Create text label (for text mode)
     s_renderer.text_label = lv_label_create(scr);
