@@ -78,7 +78,9 @@ static struct {
     lv_obj_t *left_eye;
     lv_obj_t *right_eye;
     lv_obj_t *mouth_arc;
-    lv_obj_t *mouth_line;
+    lv_obj_t *mouth_line;       // Rectangle for neutral/surprised
+    lv_obj_t *mouth_dots[5];    // 5 dots arranged in curve for smile/frown
+    lv_obj_t *whisker_rects[6]; // Simple rectangles for whiskers
     lv_obj_t *left_brow;
     lv_obj_t *right_brow;
     lv_obj_t *left_sparkle;
@@ -188,7 +190,6 @@ static int random_range(int min_val, int max_val)
 static void create_face_widgets(lv_obj_t *parent)
 {
     lv_color_t face_color = rgb888_to_lv(FACE_COLOR);
-    lv_color_t bg_color = rgb888_to_lv(BG_COLOR);
 
     // Left eye
     s_renderer.left_eye = lv_obj_create(parent);
@@ -230,37 +231,53 @@ static void create_face_widgets(lv_obj_t *parent)
     lv_obj_set_style_radius(s_renderer.mouth_line, 3, 0);
     lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
 
-    // Left brow (for angry)
+    // Left brow (for angry) - initialize at (0,0) with size (0,0) to prevent artifacts
     s_renderer.left_brow = lv_obj_create(parent);
     lv_obj_remove_style_all(s_renderer.left_brow);
     lv_obj_set_style_bg_color(s_renderer.left_brow, face_color, 0);
     lv_obj_set_style_bg_opa(s_renderer.left_brow, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_renderer.left_brow, 2, 0);
+    lv_obj_set_size(s_renderer.left_brow, 0, 0);
+    lv_obj_set_pos(s_renderer.left_brow, 0, 0);
     lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
 
-    // Right brow (for angry)
+    // Right brow (for angry) - initialize at (0,0) with size (0,0) to prevent artifacts
     s_renderer.right_brow = lv_obj_create(parent);
     lv_obj_remove_style_all(s_renderer.right_brow);
     lv_obj_set_style_bg_color(s_renderer.right_brow, face_color, 0);
     lv_obj_set_style_bg_opa(s_renderer.right_brow, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_renderer.right_brow, 2, 0);
+    lv_obj_set_size(s_renderer.right_brow, 0, 0);
+    lv_obj_set_pos(s_renderer.right_brow, 0, 0);
     lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
 
-    // Left sparkle (for excited)
-    s_renderer.left_sparkle = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.left_sparkle);
-    lv_obj_set_style_bg_color(s_renderer.left_sparkle, bg_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.left_sparkle, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.left_sparkle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
+    // Sparkles removed - they looked scary (like pupils)
+    s_renderer.left_sparkle = NULL;
+    s_renderer.right_sparkle = NULL;
 
-    // Right sparkle (for excited)
-    s_renderer.right_sparkle = lv_obj_create(parent);
-    lv_obj_remove_style_all(s_renderer.right_sparkle);
-    lv_obj_set_style_bg_color(s_renderer.right_sparkle, bg_color, 0);
-    lv_obj_set_style_bg_opa(s_renderer.right_sparkle, LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(s_renderer.right_sparkle, LV_RADIUS_CIRCLE, 0);
-    lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+    // 5 dots for curved smile/frown (arranged in parabolic curve)
+    for (int i = 0; i < 5; i++) {
+        s_renderer.mouth_dots[i] = lv_obj_create(parent);
+        lv_obj_remove_style_all(s_renderer.mouth_dots[i]);
+        lv_obj_set_style_bg_color(s_renderer.mouth_dots[i], face_color, 0);
+        lv_obj_set_style_bg_opa(s_renderer.mouth_dots[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_renderer.mouth_dots[i], LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_size(s_renderer.mouth_dots[i], 0, 0);
+        lv_obj_set_pos(s_renderer.mouth_dots[i], 0, 0);
+        lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Whisker rectangles (positioned with Y offset for fan-out angle effect)
+    for (int i = 0; i < 6; i++) {
+        s_renderer.whisker_rects[i] = lv_obj_create(parent);
+        lv_obj_remove_style_all(s_renderer.whisker_rects[i]);
+        lv_obj_set_style_bg_color(s_renderer.whisker_rects[i], face_color, 0);
+        lv_obj_set_style_bg_opa(s_renderer.whisker_rects[i], LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(s_renderer.whisker_rects[i], 2, 0);
+        lv_obj_set_size(s_renderer.whisker_rects[i], 0, 0);
+        lv_obj_set_pos(s_renderer.whisker_rects[i], 0, 0);
+        lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 // Update face widget positions and sizes
@@ -316,7 +333,7 @@ static void update_face_widgets(void)
                         abs(eye_h - s_renderer.last_eye_h) > MIN_EYE_CHANGE);
 
     if (eye_changed) {
-        // Update left eye
+        // Update left eye (no invalidate - let LVGL handle dirty rects)
         lv_obj_set_pos(s_renderer.left_eye, left_eye_x, left_eye_y);
         lv_obj_set_size(s_renderer.left_eye, eye_w, eye_h);
         lv_obj_set_style_radius(s_renderer.left_eye, radius, 0);
@@ -332,31 +349,7 @@ static void update_face_widgets(void)
         s_renderer.last_eye_h = eye_h;
     }
 
-    // Update sparkles
-    if (params->sparkle != s_renderer.last_sparkle) {
-        // Invalidate before hiding to prevent artifacts
-        lv_obj_invalidate(s_renderer.left_sparkle);
-        lv_obj_invalidate(s_renderer.right_sparkle);
-
-        if (params->sparkle) {
-            int sparkle_size = (int)(10 * SCALE_X);  // Slightly larger
-            lv_obj_set_size(s_renderer.left_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
-            lv_obj_remove_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-
-            lv_obj_set_size(s_renderer.right_sparkle, sparkle_size, sparkle_size);
-            lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
-            lv_obj_remove_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-        } else {
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-        }
-        s_renderer.last_sparkle = params->sparkle;
-    } else if (params->sparkle && eye_changed) {
-        // Update sparkle positions if eyes moved
-        lv_obj_set_pos(s_renderer.left_sparkle, left_eye_x + eye_w/4, left_eye_y + eye_h/4);
-        lv_obj_set_pos(s_renderer.right_sparkle, right_eye_x + eye_w/4, right_eye_y + eye_h/4);
-    }
+    // Sparkles disabled - they looked scary (like pupils)
 
     // Mouth position
     int mouth_x = s_renderer.center_x + offset_x;
@@ -379,44 +372,131 @@ static void update_face_widgets(void)
     }
 
     if (curve_category != s_renderer.last_mouth_curve) {
-        // SIMPLIFIED: Use only line widget (arc doesn't render reliably)
-        // Different lengths and positions indicate emotion
+        ESP_LOGI(TAG, "Mouth curve changed: %d -> %d (mouth_curve=%.2f)",
+                 s_renderer.last_mouth_curve, curve_category, params->mouth_curve);
 
-        int line_len;
-        int line_y = mouth_y;
-        int line_h = line_width;
-
-        if (curve_category == 100) {
-            // Cat mouth - wider line, positioned much lower
-            line_len = (int)(mouth_width * 3.0f);
-            line_y = mouth_y + (int)(25 * SCALE_Y);
-        } else if (curve_category == 50) {
-            // Surprised O - use a thick square dot
-            line_len = (int)(35 * SCALE_X);
-            line_h = (int)(35 * SCALE_Y);
-        } else if (curve_category == 0) {
-            // Neutral - medium line
-            line_len = (int)(mouth_width * 1.5f);
-        } else if (curve_category == 1) {
-            // Smile - wider line, positioned MUCH lower (obvious smile)
-            line_len = (int)(mouth_width * 3.0f);
-            line_y = mouth_y + (int)(25 * SCALE_Y);
-        } else {
-            // Frown - wider line, positioned MUCH higher (obvious frown)
-            line_len = (int)(mouth_width * 3.0f);
-            line_y = mouth_y - (int)(25 * SCALE_Y);
+        // Hide all mouth widgets first
+        lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < 5; i++) {
+            lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
         }
 
-        lv_obj_set_size(s_renderer.mouth_line, line_len, line_h);
-        lv_obj_set_pos(s_renderer.mouth_line, mouth_x - line_len/2, line_y - line_h/2);
-        lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        // Hide whiskers by default
+        for (int i = 0; i < 6; i++) {
+            lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+        }
+
+        if (curve_category == 100) {
+            // Cat face ":3" mouth - use 5 dots in W pattern
+            int dot_size = (int)(12 * SCALE_X);
+            int cat_width = (int)(mouth_width * 2.0f);
+            int cat_y = mouth_y + (int)(10 * SCALE_Y);
+            int bump_h = (int)(18 * SCALE_Y);
+
+            // W pattern: high-low-high-low-high
+            int y_offsets[5] = {-bump_h/2, bump_h/2, -bump_h/3, bump_h/2, -bump_h/2};
+            for (int i = 0; i < 5; i++) {
+                int x = mouth_x - cat_width/2 + (cat_width * i / 4);
+                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
+                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, cat_y + y_offsets[i] - dot_size/2);
+                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // Show whiskers with fan-out angle effect
+            int whisker_len = (int)(50 * SCALE_X);
+            int whisker_h = (int)(3 * SCALE_Y);
+            int whisker_x_start = (int)(45 * SCALE_X);
+
+            // Left whiskers - fan out (top high, middle level, bottom low)
+            lv_obj_set_size(s_renderer.whisker_rects[0], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[0], mouth_x - whisker_x_start - whisker_len, cat_y - (int)(18 * SCALE_Y));
+            lv_obj_remove_flag(s_renderer.whisker_rects[0], LV_OBJ_FLAG_HIDDEN);
+
+            lv_obj_set_size(s_renderer.whisker_rects[1], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[1], mouth_x - whisker_x_start - whisker_len, cat_y);
+            lv_obj_remove_flag(s_renderer.whisker_rects[1], LV_OBJ_FLAG_HIDDEN);
+
+            lv_obj_set_size(s_renderer.whisker_rects[2], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[2], mouth_x - whisker_x_start - whisker_len, cat_y + (int)(18 * SCALE_Y));
+            lv_obj_remove_flag(s_renderer.whisker_rects[2], LV_OBJ_FLAG_HIDDEN);
+
+            // Right whiskers - mirrored fan out
+            lv_obj_set_size(s_renderer.whisker_rects[3], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[3], mouth_x + whisker_x_start, cat_y - (int)(18 * SCALE_Y));
+            lv_obj_remove_flag(s_renderer.whisker_rects[3], LV_OBJ_FLAG_HIDDEN);
+
+            lv_obj_set_size(s_renderer.whisker_rects[4], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[4], mouth_x + whisker_x_start, cat_y);
+            lv_obj_remove_flag(s_renderer.whisker_rects[4], LV_OBJ_FLAG_HIDDEN);
+
+            lv_obj_set_size(s_renderer.whisker_rects[5], whisker_len, whisker_h);
+            lv_obj_set_pos(s_renderer.whisker_rects[5], mouth_x + whisker_x_start, cat_y + (int)(18 * SCALE_Y));
+            lv_obj_remove_flag(s_renderer.whisker_rects[5], LV_OBJ_FLAG_HIDDEN);
+
+            ESP_LOGI(TAG, "Cat mouth :3 (5 dots W) at y=%d with fanned whiskers", cat_y);
+
+        } else if (curve_category == 50) {
+            // Surprised O - circular mouth using mouth_line
+            int o_size = (int)(35 * SCALE_X);
+            lv_obj_set_size(s_renderer.mouth_line, o_size, o_size);
+            lv_obj_set_pos(s_renderer.mouth_line, mouth_x - o_size/2, mouth_y - o_size/2);
+            lv_obj_set_style_radius(s_renderer.mouth_line, o_size/2, 0);
+            lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Surprised O mouth at y=%d, size=%d", mouth_y, o_size);
+
+        } else if (curve_category == 0) {
+            // Neutral - straight line rectangle
+            int line_len = (int)(mouth_width * 1.5f);
+            lv_obj_set_size(s_renderer.mouth_line, line_len, line_width);
+            lv_obj_set_pos(s_renderer.mouth_line, mouth_x - line_len/2, mouth_y - line_width/2);
+            lv_obj_set_style_radius(s_renderer.mouth_line, 3, 0);
+            lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Neutral mouth at y=%d, len=%d", mouth_y, line_len);
+
+        } else if (curve_category == 1) {
+            // Smile - 5 dots in U curve (ends high, middle low)
+            int dot_size = (int)(12 * SCALE_X);
+            int smile_width = (int)(mouth_width * 2.2f);
+            int curve_depth = (int)(22 * SCALE_Y);
+
+            // Parabolic Y offsets: high at edges, low in middle
+            for (int i = 0; i < 5; i++) {
+                float t = (float)i / 4.0f;  // 0 to 1
+                int x = mouth_x - smile_width/2 + (int)(smile_width * t);
+                // Parabola: y = depth * 4t(1-t) - curves DOWN in middle
+                float curve_factor = 4.0f * t * (1.0f - t);
+                int y = mouth_y + (int)(curve_depth * curve_factor);
+                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
+                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, y - dot_size/2);
+                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            ESP_LOGI(TAG, "Smile (5 dots U) at y=%d, depth=%d", mouth_y, curve_depth);
+
+        } else {
+            // Frown - 5 dots in inverted U curve (ends low, middle high)
+            int dot_size = (int)(12 * SCALE_X);
+            int frown_width = (int)(mouth_width * 2.2f);
+            int curve_depth = (int)(22 * SCALE_Y);
+
+            // Inverted parabolic Y offsets: low at edges, high in middle
+            for (int i = 0; i < 5; i++) {
+                float t = (float)i / 4.0f;  // 0 to 1
+                int x = mouth_x - frown_width/2 + (int)(frown_width * t);
+                // Inverted parabola: curves UP in middle
+                float curve_factor = 4.0f * t * (1.0f - t);
+                int y = mouth_y - (int)(curve_depth * curve_factor);
+                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
+                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, y - dot_size/2);
+                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            ESP_LOGI(TAG, "Frown (5 dots inverted U) at y=%d, depth=%d", mouth_y, curve_depth);
+        }
 
         s_renderer.last_mouth_curve = curve_category;
     }
 
     // Update angry brows
     if (params->angry_brows != s_renderer.last_angry_brows) {
-        // Periodic full-screen refresh handles artifacts
         if (params->angry_brows) {
             int brow_y = s_renderer.eye_base_y - (int)(40.0f * SCALE_Y) + offset_y;
             int brow_length = (int)(35.0f * SCALE_X);
@@ -866,10 +946,14 @@ void face_renderer_show_text(const char *text, font_size_t size,
             lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            for (int i = 0; i < 5; i++) {
+                lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
             lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+            for (int i = 0; i < 6; i++) {
+                lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+            }
 
             // Update screen background
             lv_obj_t *scr = lv_scr_act();
@@ -940,10 +1024,14 @@ void face_renderer_show_pixel_art(const uint32_t *pixels, size_t count,
             lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            for (int i = 0; i < 5; i++) {
+                lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            }
             lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+            for (int i = 0; i < 6; i++) {
+                lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+            }
 
             // Update background
             lv_obj_t *scr = lv_scr_act();

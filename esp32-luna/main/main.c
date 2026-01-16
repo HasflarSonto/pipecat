@@ -116,14 +116,19 @@ void app_main(void)
     ESP_ERROR_CHECK(luna_protocol_init());
     luna_protocol_set_handler(luna_cmd_handler, NULL);
 
-    // Connect to WiFi
+    // Connect to WiFi (with retry, don't crash on failure)
     ESP_LOGI(TAG, "Connecting to WiFi: %s", WIFI_SSID);
     wifi_manager_config_t wifi_config = {
         .store_in_nvs = true,
     };
     strncpy(wifi_config.ssid, WIFI_SSID, sizeof(wifi_config.ssid) - 1);
     strncpy(wifi_config.password, WIFI_PASSWORD, sizeof(wifi_config.password) - 1);
-    ESP_ERROR_CHECK(wifi_manager_connect(&wifi_config));
+
+    esp_err_t wifi_err = wifi_manager_connect(&wifi_config);
+    if (wifi_err != ESP_OK) {
+        ESP_LOGW(TAG, "WiFi connect returned %d, waiting for event-based connection...", wifi_err);
+        // Don't crash - the event handler will still try to connect
+    }
 
     // Wait for WiFi connection
     EventBits_t bits = xEventGroupWaitBits(s_event_group,

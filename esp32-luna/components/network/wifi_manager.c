@@ -172,6 +172,10 @@ esp_err_t wifi_manager_connect(const wifi_manager_config_t *config)
         return ESP_ERR_INVALID_ARG;
     }
 
+    // Clear event group bits and reset retry count for fresh start
+    xEventGroupClearBits(s_wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
+    s_retry_count = 0;
+
     // Store in NVS if requested
     if (config->store_in_nvs) {
         nvs_handle_t nvs;

@@ -228,3 +228,10 @@ idf.py build
 idf.py -p /dev/cu.usbmodem1101 flash monitor
 ```
 
+---
+
+## Related Documentation
+
+- **`ESP32_DEV_HANDOFF.md`** - Developer handoff with known issues and code locations
+- **`ESP32_WEBSOCKET_PROTOCOL.md`** - WebSocket communication protocol spec
+

@@ -256,6 +256,13 @@ If audio buffers overflow:
 
 ---
 
+## Related Documentation
+
+- **`ESP32_DEV_HANDOFF.md`** - Developer handoff with known issues and code locations
+- **`ESP32_BUILD_COMMANDS.md`** - Build and flash commands
+
+---
+
 ## Version History
 
 | Version | Date | Changes |
