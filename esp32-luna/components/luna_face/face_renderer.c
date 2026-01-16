@@ -80,7 +80,10 @@ static struct {
     lv_obj_t *mouth_arc;
     lv_obj_t *mouth_line;       // Rectangle for neutral/surprised
     lv_obj_t *mouth_dots[5];    // 5 dots arranged in curve for smile/frown
-    lv_obj_t *whisker_rects[6]; // Simple rectangles for whiskers
+    lv_obj_t *cat_arc_top;      // Top arc for cat :3 mouth
+    lv_obj_t *cat_arc_bottom;   // Bottom arc for cat :3 mouth
+    lv_obj_t *whisker_lines[6]; // Line widgets for angled whiskers
+    lv_point_precise_t whisker_points[6][2];  // Points for each whisker line
     lv_obj_t *left_brow;
     lv_obj_t *right_brow;
     lv_obj_t *left_sparkle;
@@ -267,16 +270,48 @@ static void create_face_widgets(lv_obj_t *parent)
         lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Whisker rectangles (positioned with Y offset for fan-out angle effect)
+    // Cat mouth arcs - two small arcs forming sideways "3" for :3 face
+    s_renderer.cat_arc_top = lv_arc_create(parent);
+    lv_obj_remove_style_all(s_renderer.cat_arc_top);
+    lv_obj_set_style_arc_width(s_renderer.cat_arc_top, 0, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_renderer.cat_arc_top, face_color, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_renderer.cat_arc_top, (int)(5 * SCALE_Y), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_renderer.cat_arc_top, true, LV_PART_INDICATOR);
+    lv_obj_set_style_pad_all(s_renderer.cat_arc_top, 0, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(s_renderer.cat_arc_top, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_arc_set_mode(s_renderer.cat_arc_top, LV_ARC_MODE_NORMAL);
+    lv_obj_set_pos(s_renderer.cat_arc_top, -100, -100);  // Off-screen initially
+    lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+
+    s_renderer.cat_arc_bottom = lv_arc_create(parent);
+    lv_obj_remove_style_all(s_renderer.cat_arc_bottom);
+    lv_obj_set_style_arc_width(s_renderer.cat_arc_bottom, 0, LV_PART_MAIN);
+    lv_obj_set_style_arc_color(s_renderer.cat_arc_bottom, face_color, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_width(s_renderer.cat_arc_bottom, (int)(5 * SCALE_Y), LV_PART_INDICATOR);
+    lv_obj_set_style_arc_rounded(s_renderer.cat_arc_bottom, true, LV_PART_INDICATOR);
+    lv_obj_set_style_pad_all(s_renderer.cat_arc_bottom, 0, LV_PART_KNOB);
+    lv_obj_set_style_bg_opa(s_renderer.cat_arc_bottom, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_arc_set_mode(s_renderer.cat_arc_bottom, LV_ARC_MODE_NORMAL);
+    lv_obj_set_pos(s_renderer.cat_arc_bottom, -100, -100);  // Off-screen initially
+    lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+
+    // Whisker lines - using lv_line for proper angled whiskers
     for (int i = 0; i < 6; i++) {
-        s_renderer.whisker_rects[i] = lv_obj_create(parent);
-        lv_obj_remove_style_all(s_renderer.whisker_rects[i]);
-        lv_obj_set_style_bg_color(s_renderer.whisker_rects[i], face_color, 0);
-        lv_obj_set_style_bg_opa(s_renderer.whisker_rects[i], LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(s_renderer.whisker_rects[i], 2, 0);
-        lv_obj_set_size(s_renderer.whisker_rects[i], 0, 0);
-        lv_obj_set_pos(s_renderer.whisker_rects[i], 0, 0);
-        lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+        // Initialize points to minimal line (avoid ghost at 0,0)
+        s_renderer.whisker_points[i][0].x = 0;
+        s_renderer.whisker_points[i][0].y = 0;
+        s_renderer.whisker_points[i][1].x = 1;
+        s_renderer.whisker_points[i][1].y = 0;
+
+        s_renderer.whisker_lines[i] = lv_line_create(parent);
+        lv_obj_remove_style_all(s_renderer.whisker_lines[i]);
+        lv_obj_set_style_line_color(s_renderer.whisker_lines[i], face_color, 0);
+        lv_obj_set_style_line_width(s_renderer.whisker_lines[i], (int)(3 * SCALE_Y), 0);
+        lv_obj_set_style_line_rounded(s_renderer.whisker_lines[i], true, 0);
+        lv_line_set_points(s_renderer.whisker_lines[i], s_renderer.whisker_points[i], 2);
+        // Position off-screen initially to prevent ghost artifacts
+        lv_obj_set_pos(s_renderer.whisker_lines[i], -100, -100);
+        lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -383,60 +418,114 @@ static void update_face_widgets(void)
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
         }
 
-        // Hide whiskers
+        // Hide whiskers and cat arcs
         for (int i = 0; i < 6; i++) {
-            lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
         }
+        lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
         if (curve_category == 100) {
-            // Cat face ":3" mouth - use 5 dots in W pattern
-            int dot_size = (int)(12 * SCALE_X);
-            int cat_width = (int)(mouth_width * 2.0f);
-            int cat_y = mouth_y + (int)(10 * SCALE_Y);
-            int bump_h = (int)(18 * SCALE_Y);
+            // Cat face ":3" mouth - two small arcs forming sideways "3"
+            // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise
 
-            // W pattern: high-low-high-low-high
-            int y_offsets[5] = {-bump_h/2, bump_h/2, -bump_h/3, bump_h/2, -bump_h/2};
-            for (int i = 0; i < 5; i++) {
-                int x = mouth_x - cat_width/2 + (cat_width * i / 4);
-                lv_obj_set_size(s_renderer.mouth_dots[i], dot_size, dot_size);
-                lv_obj_set_pos(s_renderer.mouth_dots[i], x - dot_size/2, cat_y + y_offsets[i] - dot_size/2);
-                lv_obj_remove_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
-            }
+            int arc_size = 40;  // Small to avoid SPI issues
+            int arc_thickness = (int)(6 * SCALE_Y);
+            int center_x = s_renderer.width / 2 + offset_x;
+            int cat_y = mouth_y;
 
-            // Show whiskers - simple horizontal lines (no rotation to avoid invalidation issues)
-            int whisker_len = (int)(50 * SCALE_X);
-            int whisker_h = (int)(3 * SCALE_Y);
-            int whisker_x_start = (int)(45 * SCALE_X);
-            int whisker_spacing = (int)(12 * SCALE_Y);  // Vertical spacing between whiskers
+            // For :3, we want two curves opening UPWARD (like ω flipped)
+            // Use angles 0-180 for top semicircle (opens up)
+            // Overlap the arcs so they connect into one smooth line
 
-            // Left whiskers - three horizontal lines fanning out vertically
-            lv_obj_set_size(s_renderer.whisker_rects[0], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[0], mouth_x - whisker_x_start - whisker_len, cat_y - whisker_spacing);
-            lv_obj_remove_flag(s_renderer.whisker_rects[0], LV_OBJ_FLAG_HIDDEN);
+            int overlap = arc_size / 5;  // Small overlap to connect arcs
 
-            lv_obj_set_size(s_renderer.whisker_rects[1], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[1], mouth_x - whisker_x_start - whisker_len, cat_y);
-            lv_obj_remove_flag(s_renderer.whisker_rects[1], LV_OBJ_FLAG_HIDDEN);
+            // Left arc - opens upward
+            lv_obj_set_size(s_renderer.cat_arc_top, arc_size, arc_size);
+            int left_arc_x = center_x - arc_size + overlap/2;
+            int left_arc_y = cat_y - arc_size/2;
+            lv_obj_set_pos(s_renderer.cat_arc_top, left_arc_x, left_arc_y);
+            // 0° to 180° = top semicircle (opens upward)
+            lv_arc_set_bg_angles(s_renderer.cat_arc_top, 0, 180);
+            lv_arc_set_angles(s_renderer.cat_arc_top, 0, 180);
+            lv_obj_set_style_arc_width(s_renderer.cat_arc_top, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
 
-            lv_obj_set_size(s_renderer.whisker_rects[2], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[2], mouth_x - whisker_x_start - whisker_len, cat_y + whisker_spacing);
-            lv_obj_remove_flag(s_renderer.whisker_rects[2], LV_OBJ_FLAG_HIDDEN);
+            // Right arc - opens upward, overlapping with left
+            lv_obj_set_size(s_renderer.cat_arc_bottom, arc_size, arc_size);
+            int right_arc_x = center_x - overlap/2;
+            int right_arc_y = cat_y - arc_size/2;
+            lv_obj_set_pos(s_renderer.cat_arc_bottom, right_arc_x, right_arc_y);
+            lv_arc_set_bg_angles(s_renderer.cat_arc_bottom, 0, 180);
+            lv_arc_set_angles(s_renderer.cat_arc_bottom, 0, 180);
+            lv_obj_set_style_arc_width(s_renderer.cat_arc_bottom, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
-            // Right whiskers - mirrored
-            lv_obj_set_size(s_renderer.whisker_rects[3], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[3], mouth_x + whisker_x_start, cat_y - whisker_spacing);
-            lv_obj_remove_flag(s_renderer.whisker_rects[3], LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Cat :3 arcs at y=%d", cat_y);
 
-            lv_obj_set_size(s_renderer.whisker_rects[4], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[4], mouth_x + whisker_x_start, cat_y);
-            lv_obj_remove_flag(s_renderer.whisker_rects[4], LV_OBJ_FLAG_HIDDEN);
+            // Show whiskers - position line widgets at (0,0) and use absolute coords
+            int whisker_len = (int)(55 * SCALE_X);
+            int whisker_x_offset = (int)(50 * SCALE_X);
+            int whisker_y_spacing = (int)(14 * SCALE_Y);
+            int whisker_y_fan = (int)(10 * SCALE_Y);
 
-            lv_obj_set_size(s_renderer.whisker_rects[5], whisker_len, whisker_h);
-            lv_obj_set_pos(s_renderer.whisker_rects[5], mouth_x + whisker_x_start, cat_y + whisker_spacing);
-            lv_obj_remove_flag(s_renderer.whisker_rects[5], LV_OBJ_FLAG_HIDDEN);
+            // Left whiskers - start near mouth, extend left with fan angle
+            // Whisker 0: top-left, angles up
+            s_renderer.whisker_points[0][0].x = 0;
+            s_renderer.whisker_points[0][0].y = 0;
+            s_renderer.whisker_points[0][1].x = whisker_len;
+            s_renderer.whisker_points[0][1].y = whisker_y_fan;  // Angles down-right (so going left it angles up)
+            lv_line_set_points(s_renderer.whisker_lines[0], s_renderer.whisker_points[0], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[0], center_x - whisker_x_offset - whisker_len, cat_y - whisker_y_spacing - whisker_y_fan);
+            lv_obj_remove_flag(s_renderer.whisker_lines[0], LV_OBJ_FLAG_HIDDEN);
 
-            ESP_LOGI(TAG, "Cat mouth :3 (5 dots W) at y=%d with whiskers", cat_y);
+            // Whisker 1: middle-left, horizontal
+            s_renderer.whisker_points[1][0].x = 0;
+            s_renderer.whisker_points[1][0].y = 0;
+            s_renderer.whisker_points[1][1].x = whisker_len;
+            s_renderer.whisker_points[1][1].y = 0;
+            lv_line_set_points(s_renderer.whisker_lines[1], s_renderer.whisker_points[1], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[1], center_x - whisker_x_offset - whisker_len, cat_y);
+            lv_obj_remove_flag(s_renderer.whisker_lines[1], LV_OBJ_FLAG_HIDDEN);
+
+            // Whisker 2: bottom-left, angles down
+            s_renderer.whisker_points[2][0].x = 0;
+            s_renderer.whisker_points[2][0].y = whisker_y_fan;
+            s_renderer.whisker_points[2][1].x = whisker_len;
+            s_renderer.whisker_points[2][1].y = 0;
+            lv_line_set_points(s_renderer.whisker_lines[2], s_renderer.whisker_points[2], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[2], center_x - whisker_x_offset - whisker_len, cat_y + whisker_y_spacing);
+            lv_obj_remove_flag(s_renderer.whisker_lines[2], LV_OBJ_FLAG_HIDDEN);
+
+            // Right whiskers - mirror of left
+            // Whisker 3: top-right, angles up
+            s_renderer.whisker_points[3][0].x = 0;
+            s_renderer.whisker_points[3][0].y = whisker_y_fan;
+            s_renderer.whisker_points[3][1].x = whisker_len;
+            s_renderer.whisker_points[3][1].y = 0;
+            lv_line_set_points(s_renderer.whisker_lines[3], s_renderer.whisker_points[3], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[3], center_x + whisker_x_offset, cat_y - whisker_y_spacing - whisker_y_fan);
+            lv_obj_remove_flag(s_renderer.whisker_lines[3], LV_OBJ_FLAG_HIDDEN);
+
+            // Whisker 4: middle-right, horizontal
+            s_renderer.whisker_points[4][0].x = 0;
+            s_renderer.whisker_points[4][0].y = 0;
+            s_renderer.whisker_points[4][1].x = whisker_len;
+            s_renderer.whisker_points[4][1].y = 0;
+            lv_line_set_points(s_renderer.whisker_lines[4], s_renderer.whisker_points[4], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[4], center_x + whisker_x_offset, cat_y);
+            lv_obj_remove_flag(s_renderer.whisker_lines[4], LV_OBJ_FLAG_HIDDEN);
+
+            // Whisker 5: bottom-right, angles down
+            s_renderer.whisker_points[5][0].x = 0;
+            s_renderer.whisker_points[5][0].y = 0;
+            s_renderer.whisker_points[5][1].x = whisker_len;
+            s_renderer.whisker_points[5][1].y = whisker_y_fan;
+            lv_line_set_points(s_renderer.whisker_lines[5], s_renderer.whisker_points[5], 2);
+            lv_obj_set_pos(s_renderer.whisker_lines[5], center_x + whisker_x_offset, cat_y + whisker_y_spacing);
+            lv_obj_remove_flag(s_renderer.whisker_lines[5], LV_OBJ_FLAG_HIDDEN);
+
+            ESP_LOGI(TAG, "Cat :3 with whiskers at center_x=%d, cat_y=%d", center_x, cat_y);
 
         } else if (curve_category == 50) {
             // Surprised O - circular mouth using mouth_line
@@ -951,8 +1040,10 @@ void face_renderer_show_text(const char *text, font_size_t size,
             lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
             for (int i = 0; i < 6; i++) {
-                lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
             }
+            lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
             // Update screen background
             lv_obj_t *scr = lv_scr_act();
@@ -1029,8 +1120,10 @@ void face_renderer_show_pixel_art(const uint32_t *pixels, size_t count,
             lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
             for (int i = 0; i < 6; i++) {
-                lv_obj_add_flag(s_renderer.whisker_rects[i], LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
             }
+            lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
             // Update background
             lv_obj_t *scr = lv_scr_act();

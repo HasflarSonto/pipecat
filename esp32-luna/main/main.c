@@ -146,23 +146,16 @@ void app_main(void)
     ESP_LOGI(TAG, "Connecting to server...");
     ESP_ERROR_CHECK(ws_client_connect());
 
-    // Wait for WebSocket connection
+    // Wait briefly for WebSocket connection (audio will start in event handler when connected)
     bits = xEventGroupWaitBits(s_event_group,
                                WS_CONNECTED_BIT,
                                pdFALSE, pdFALSE,
-                               pdMS_TO_TICKS(10000));
+                               pdMS_TO_TICKS(5000));
     if (!(bits & WS_CONNECTED_BIT)) {
-        ESP_LOGE(TAG, "WebSocket connection timeout!");
-        face_renderer_set_emotion(EMOTION_CONFUSED);
-        // DON'T start audio capture when not connected - saves CPU and prevents ring buffer floods
-        ESP_LOGI(TAG, "Audio capture NOT started (no server connection)");
-    } else {
-        // Start audio streaming only when connected
-        ESP_LOGI(TAG, "Starting audio capture...");
-        ESP_ERROR_CHECK(audio_capture_start());
-        ESP_ERROR_CHECK(audio_playback_start());
-        face_renderer_set_emotion(EMOTION_HAPPY);
+        ESP_LOGW(TAG, "WebSocket not yet connected, will start audio when connection established");
+        face_renderer_set_emotion(EMOTION_NEUTRAL);
     }
+    // Note: Audio capture/playback now starts in ws_event_handler on WS_EVENT_CONNECTED
 
     ESP_LOGI(TAG, "=== ESP32-Luna Ready ===");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
@@ -174,20 +167,27 @@ void app_main(void)
     static const int emotion_count = sizeof(emotion_names) / sizeof(emotion_names[0]);
     int emotion_index = 0;
     int emotion_cycle_counter = 0;
+    int disconnect_grace_counter = 0;  // Grace period before entering demo mode
+    #define DISCONNECT_GRACE_PERIOD 10  // 10 seconds before demo mode activates
 
     // Main loop - just keep running
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        // Emotion cycling demo when not connected to server (every 3 seconds)
+        // Emotion cycling demo when not connected to server (with grace period)
         if (!ws_client_is_connected()) {
-            if (++emotion_cycle_counter >= 3) {
-                emotion_cycle_counter = 0;
-                ESP_LOGI(TAG, "Demo: Setting emotion to '%s'", emotion_names[emotion_index]);
-                face_renderer_set_emotion_str(emotion_names[emotion_index]);
-                emotion_index = (emotion_index + 1) % emotion_count;
+            disconnect_grace_counter++;
+            // Only enter demo mode after sustained disconnect (10 seconds)
+            if (disconnect_grace_counter >= DISCONNECT_GRACE_PERIOD) {
+                if (++emotion_cycle_counter >= 3) {
+                    emotion_cycle_counter = 0;
+                    ESP_LOGI(TAG, "Demo: Setting emotion to '%s'", emotion_names[emotion_index]);
+                    face_renderer_set_emotion_str(emotion_names[emotion_index]);
+                    emotion_index = (emotion_index + 1) % emotion_count;
+                }
             }
         } else {
+            disconnect_grace_counter = 0;  // Reset grace period on connection
             emotion_cycle_counter = 0;  // Reset counter when connected
         }
 
@@ -238,11 +238,19 @@ static void ws_event_handler(ws_client_event_data_t *event, void *ctx)
         case WS_EVENT_CONNECTED:
             ESP_LOGI(TAG, "WebSocket connected!");
             xEventGroupSetBits(s_event_group, WS_CONNECTED_BIT);
+            // Start audio streaming when connected (handles late connections)
+            ESP_LOGI(TAG, "Starting audio capture...");
+            audio_capture_start();
+            audio_playback_start();
+            face_renderer_set_emotion(EMOTION_HAPPY);
             break;
 
         case WS_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "WebSocket disconnected!");
             xEventGroupClearBits(s_event_group, WS_CONNECTED_BIT);
+            // Stop audio when disconnected
+            audio_capture_stop();
+            audio_playback_stop();
             face_renderer_set_emotion(EMOTION_CONFUSED);
             break;
 
