@@ -29,21 +29,33 @@ static int s_height = 0;
 static void* s_buf1 = NULL;
 static void* s_buf2 = NULL;
 
+/* Keyboard callback */
+static sdl_keyboard_callback_t s_keyboard_callback = NULL;
+
 /**
  * LVGL flush callback - renders to SDL texture
- * Using FULL render mode, so area covers entire display
- * ESP32 uses RGB565 format (2 bytes per pixel)
+ * Using PARTIAL render mode for better performance
+ * Only updates the dirty rectangle area
  */
 static void sdl_flush_cb(lv_display_t* disp, const lv_area_t* area, uint8_t* px_map)
 {
-    /* In FULL mode, LVGL renders the entire screen to px_map */
-    /* ESP32 uses RGB565 format (2 bytes per pixel, 16-bit) */
-    /* Pitch = width * 2 bytes per pixel */
-    SDL_UpdateTexture(s_texture, NULL, px_map, s_width * 2);
+    /* Calculate the dirty rectangle */
+    SDL_Rect rect;
+    rect.x = area->x1;
+    rect.y = area->y1;
+    rect.w = area->x2 - area->x1 + 1;
+    rect.h = area->y2 - area->y1 + 1;
 
-    /* Copy texture to renderer and present */
-    SDL_RenderCopy(s_renderer, s_texture, NULL, NULL);
-    SDL_RenderPresent(s_renderer);
+    /* Update only the dirty area of the texture
+     * pitch = width of the area * 2 bytes per pixel (RGB565) */
+    int pitch = rect.w * 2;
+    SDL_UpdateTexture(s_texture, &rect, px_map, pitch);
+
+    /* Only present on the last flush of this frame (when flushing is complete) */
+    if (lv_display_flush_is_last(disp)) {
+        SDL_RenderCopy(s_renderer, s_texture, NULL, NULL);
+        SDL_RenderPresent(s_renderer);
+    }
 
     /* Tell LVGL flush is done */
     lv_display_flush_ready(disp);
@@ -79,8 +91,12 @@ lv_display_t* sdl_display_init(int width, int height)
         return NULL;
     }
 
-    /* Create renderer */
+    /* Create renderer - NO VSYNC for responsive updates */
     s_renderer = SDL_CreateRenderer(s_window, -1, SDL_RENDERER_ACCELERATED);
+    if (!s_renderer) {
+        /* Fallback to software renderer if accelerated fails */
+        s_renderer = SDL_CreateRenderer(s_window, -1, SDL_RENDERER_SOFTWARE);
+    }
     if (!s_renderer) {
         fprintf(stderr, "SDL_CreateRenderer failed: %s\n", SDL_GetError());
         SDL_DestroyWindow(s_window);
@@ -110,8 +126,9 @@ lv_display_t* sdl_display_init(int width, int height)
     SDL_RenderClear(s_renderer);
     SDL_RenderPresent(s_renderer);
 
-    /* Allocate LVGL draw buffers (double buffered)
-     * RGB565 = 2 bytes per pixel */
+    /* Allocate LVGL draw buffers (double buffered, full screen)
+     * RGB565 = 2 bytes per pixel
+     * Full screen buffer is fine on desktop - RAM is plentiful */
     size_t buf_size = width * height;
     size_t buf_bytes = buf_size * 2;  /* 2 bytes per pixel for RGB565 */
     s_buf1 = malloc(buf_bytes);
@@ -144,8 +161,9 @@ lv_display_t* sdl_display_init(int width, int height)
     /* Set display color format to RGB565 (matching ESP32) */
     lv_display_set_color_format(g_sim_display, LV_COLOR_FORMAT_RGB565);
 
-    /* Set up LVGL display buffers - use FULL mode for clean SDL rendering */
-    lv_display_set_buffers(g_sim_display, s_buf1, s_buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_FULL);
+    /* Set up LVGL display buffers - use PARTIAL mode for better performance
+     * Only dirty areas will be redrawn */
+    lv_display_set_buffers(g_sim_display, s_buf1, s_buf2, buf_bytes, LV_DISPLAY_RENDER_MODE_PARTIAL);
 
     /* Set flush callback */
     lv_display_set_flush_cb(g_sim_display, sdl_flush_cb);
@@ -223,10 +241,19 @@ void sdl_display_poll_events(void)
                 if (event.key.keysym.sym == SDLK_ESCAPE) {
                     s_quit_requested = true;
                 }
+                /* Forward to keyboard callback */
+                if (s_keyboard_callback) {
+                    s_keyboard_callback(event.key.keysym.sym);
+                }
                 break;
 
             default:
                 break;
         }
     }
+}
+
+void sdl_display_set_keyboard_callback(sdl_keyboard_callback_t callback)
+{
+    s_keyboard_callback = callback;
 }

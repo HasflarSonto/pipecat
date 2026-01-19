@@ -269,8 +269,17 @@ bool ws_client_is_connected(void)
 
 void ws_client_service(int timeout_ms)
 {
-    if (s_context) {
-        lws_service(s_context, timeout_ms);
+    (void)timeout_ms;  /* Always non-blocking */
+
+    /* Skip service if no context or no active/pending connection
+     * lws_service() can block even with timeout=0 after connection failure */
+    if (!s_context) {
+        return;
+    }
+
+    /* Only service if we have an active connection or are trying to connect */
+    if (s_connected || s_connecting) {
+        lws_service(s_context, 0);
     }
 }
 

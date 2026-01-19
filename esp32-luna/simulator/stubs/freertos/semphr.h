@@ -1,24 +1,23 @@
 /**
  * FreeRTOS Semaphore Stub for Simulator
- * Uses pthread mutex for implementation
+ *
+ * In the simulator, everything runs single-threaded in the main loop,
+ * so we don't need real locking. Just use no-ops to avoid deadlocks.
  */
 
 #ifndef FREERTOS_SEMPHR_H
 #define FREERTOS_SEMPHR_H
 
 #include "FreeRTOS.h"
-#include <pthread.h>
 #include <stdlib.h>
 
-typedef pthread_mutex_t* SemaphoreHandle_t;
+/* Dummy handle - no real mutex needed in single-threaded simulator */
+typedef void* SemaphoreHandle_t;
 
 static inline SemaphoreHandle_t xSemaphoreCreateMutex(void)
 {
-    pthread_mutex_t* mutex = malloc(sizeof(pthread_mutex_t));
-    if (mutex) {
-        pthread_mutex_init(mutex, NULL);
-    }
-    return mutex;
+    /* Return non-NULL dummy pointer */
+    return (void*)1;
 }
 
 static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
@@ -29,24 +28,20 @@ static inline SemaphoreHandle_t xSemaphoreCreateBinary(void)
 static inline BaseType_t xSemaphoreTake(SemaphoreHandle_t xSemaphore, TickType_t xBlockTime)
 {
     (void)xBlockTime;
-    if (xSemaphore == NULL) return pdFALSE;
-    pthread_mutex_lock(xSemaphore);
-    return pdTRUE;
+    /* Always succeed - single threaded, no contention */
+    return (xSemaphore != NULL) ? pdTRUE : pdFALSE;
 }
 
 static inline BaseType_t xSemaphoreGive(SemaphoreHandle_t xSemaphore)
 {
-    if (xSemaphore == NULL) return pdFALSE;
-    pthread_mutex_unlock(xSemaphore);
-    return pdTRUE;
+    /* Always succeed */
+    return (xSemaphore != NULL) ? pdTRUE : pdFALSE;
 }
 
 static inline void vSemaphoreDelete(SemaphoreHandle_t xSemaphore)
 {
-    if (xSemaphore) {
-        pthread_mutex_destroy(xSemaphore);
-        free(xSemaphore);
-    }
+    (void)xSemaphore;
+    /* Nothing to free */
 }
 
 #endif /* FREERTOS_SEMPHR_H */

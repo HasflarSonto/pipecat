@@ -14,6 +14,10 @@
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
+
+/* SDL for key codes */
+#include <SDL2/SDL.h>
 
 /* LVGL */
 #include "lvgl.h"
@@ -44,6 +48,28 @@ static volatile bool g_running = true;
 static char g_server_host[256] = DEFAULT_HOST;
 static int g_server_port = DEFAULT_PORT;
 static bool g_audio_enabled = false;
+static bool g_demo_mode = true;  /* Demo mode when not connected */
+static bool g_connected = false;
+
+/* Demo mode state */
+typedef enum {
+    DEMO_EMOTIONS,      /* Cycle through emotions */
+    DEMO_CLOCK,         /* Show clock */
+    DEMO_WEATHER,       /* Show weather */
+    DEMO_TIMER,         /* Show timer countdown */
+    DEMO_ANIMATION,     /* Show animation types */
+    DEMO_MODE_COUNT
+} demo_state_t;
+
+static demo_state_t g_demo_state = DEMO_EMOTIONS;
+static int g_demo_sub_state = 0;  /* Sub-state within each demo mode */
+static uint32_t g_demo_last_update = 0;
+static int g_demo_timer_seconds = 10;  /* Countdown for timer demo */
+
+/* Demo timing */
+#define DEMO_EMOTION_INTERVAL_MS  2000   /* Time per emotion */
+#define DEMO_MODE_INTERVAL_MS     8000   /* Time per demo mode */
+#define DEMO_TIMER_INTERVAL_MS    1000   /* Timer countdown interval */
 
 /* LVGL tick timer (called from main loop) */
 static uint32_t g_last_tick = 0;
@@ -150,6 +176,82 @@ static void handle_luna_command(const luna_cmd_t* cmd)
             }
             break;
 
+        case LUNA_CMD_WEATHER:
+            printf("Weather: %s %s (%s)\n",
+                   cmd->data.weather.temp,
+                   cmd->data.weather.icon,
+                   cmd->data.weather.description);
+            {
+                /* Map icon string to weather_icon_t enum */
+                weather_icon_t icon = WEATHER_ICON_SUNNY;
+                if (strcmp(cmd->data.weather.icon, "cloudy") == 0) {
+                    icon = WEATHER_ICON_CLOUDY;
+                } else if (strcmp(cmd->data.weather.icon, "rainy") == 0) {
+                    icon = WEATHER_ICON_RAINY;
+                } else if (strcmp(cmd->data.weather.icon, "snowy") == 0) {
+                    icon = WEATHER_ICON_SNOWY;
+                } else if (strcmp(cmd->data.weather.icon, "stormy") == 0) {
+                    icon = WEATHER_ICON_STORMY;
+                } else if (strcmp(cmd->data.weather.icon, "foggy") == 0) {
+                    icon = WEATHER_ICON_FOGGY;
+                } else if (strcmp(cmd->data.weather.icon, "partly_cloudy") == 0) {
+                    icon = WEATHER_ICON_PARTLY_CLOUDY;
+                }
+                face_renderer_show_weather(
+                    cmd->data.weather.temp,
+                    icon,
+                    cmd->data.weather.description
+                );
+            }
+            break;
+
+        case LUNA_CMD_TIMER:
+            printf("Timer: %d:%02d %s %s\n",
+                   cmd->data.timer.minutes,
+                   cmd->data.timer.seconds,
+                   cmd->data.timer.label,
+                   cmd->data.timer.is_running ? "(running)" : "(paused)");
+            face_renderer_show_timer(
+                cmd->data.timer.minutes,
+                cmd->data.timer.seconds,
+                cmd->data.timer.label,
+                cmd->data.timer.is_running
+            );
+            break;
+
+        case LUNA_CMD_CLOCK:
+            printf("Clock: %02d:%02d %s\n",
+                   cmd->data.clock.hours,
+                   cmd->data.clock.minutes,
+                   cmd->data.clock.is_24h ? "(24h)" : "(12h)");
+            face_renderer_show_clock(
+                cmd->data.clock.hours,
+                cmd->data.clock.minutes,
+                cmd->data.clock.is_24h
+            );
+            break;
+
+        case LUNA_CMD_ANIMATION:
+            printf("Animation: %s\n", cmd->data.animation.type);
+            {
+                /* Map animation string to animation_type_t enum */
+                animation_type_t anim = ANIMATION_RAIN;
+                if (strcmp(cmd->data.animation.type, "snow") == 0) {
+                    anim = ANIMATION_SNOW;
+                } else if (strcmp(cmd->data.animation.type, "stars") == 0) {
+                    anim = ANIMATION_STARS;
+                } else if (strcmp(cmd->data.animation.type, "matrix") == 0) {
+                    anim = ANIMATION_MATRIX;
+                }
+                face_renderer_show_animation(anim);
+            }
+            break;
+
+        case LUNA_CMD_CLEAR_DISPLAY:
+            printf("Clear display\n");
+            face_renderer_clear_display();
+            break;
+
         default:
             printf("Unknown command type: %d\n", cmd->type);
             break;
@@ -177,6 +279,9 @@ static void ws_event_handler(ws_event_t event, const void* data, size_t len)
     switch (event) {
         case WS_EVENT_CONNECTED:
             printf("Connected to server\n");
+            g_connected = true;
+            g_demo_mode = false;  /* Disable demo mode when connected */
+            face_renderer_clear_display();  /* Return to face mode */
             face_renderer_set_emotion(EMOTION_HAPPY);
 
             /* Start audio capture */
@@ -187,6 +292,12 @@ static void ws_event_handler(ws_event_t event, const void* data, size_t len)
 
         case WS_EVENT_DISCONNECTED:
             printf("Disconnected from server\n");
+            g_connected = false;
+            g_demo_mode = true;  /* Re-enable demo mode when disconnected */
+            g_demo_state = DEMO_EMOTIONS;
+            g_demo_sub_state = 0;
+            g_demo_last_update = get_time_ms();
+            face_renderer_clear_display();  /* Return to face mode */
             face_renderer_set_emotion(EMOTION_CONFUSED);
 
             /* Stop audio */
@@ -221,6 +332,303 @@ static void ws_event_handler(ws_event_t event, const void* data, size_t len)
 }
 
 /**
+ * Update demo mode - cycles through emotions and display modes
+ */
+static void update_demo_mode(void)
+{
+    if (!g_demo_mode || g_connected) {
+        return;
+    }
+
+    uint32_t now = get_time_ms();
+    uint32_t elapsed = now - g_demo_last_update;
+
+    /* Emotion names for demo */
+    static const char* emotions[] = {
+        "neutral", "happy", "sad", "angry", "surprised",
+        "thinking", "confused", "excited", "cat"
+    };
+    static const int num_emotions = sizeof(emotions) / sizeof(emotions[0]);
+
+    /* Weather conditions for demo */
+    static const struct {
+        const char* temp;
+        weather_icon_t icon;
+        const char* desc;
+    } weather_conditions[] = {
+        {"72°F", WEATHER_ICON_SUNNY, "Sunny"},
+        {"65°F", WEATHER_ICON_PARTLY_CLOUDY, "Partly Cloudy"},
+        {"58°F", WEATHER_ICON_CLOUDY, "Cloudy"},
+        {"52°F", WEATHER_ICON_RAINY, "Rainy"},
+    };
+    static const int num_weather = sizeof(weather_conditions) / sizeof(weather_conditions[0]);
+
+    /* Animation types for demo */
+    static const animation_type_t animations[] = {
+        ANIMATION_RAIN, ANIMATION_SNOW, ANIMATION_STARS, ANIMATION_MATRIX
+    };
+    static const int num_animations = sizeof(animations) / sizeof(animations[0]);
+
+    switch (g_demo_state) {
+        case DEMO_EMOTIONS:
+            if (elapsed >= DEMO_EMOTION_INTERVAL_MS) {
+                g_demo_last_update = now;
+
+                /* Cycle to next emotion */
+                face_renderer_set_emotion_str(emotions[g_demo_sub_state]);
+                printf("Demo: Emotion -> %s\n", emotions[g_demo_sub_state]);
+
+                g_demo_sub_state++;
+                if (g_demo_sub_state >= num_emotions) {
+                    /* Move to next demo mode */
+                    g_demo_sub_state = 0;
+                    g_demo_state = DEMO_CLOCK;
+                    printf("Demo: Switching to CLOCK mode\n");
+                }
+            }
+            break;
+
+        case DEMO_CLOCK:
+            if (elapsed >= 1000) {  /* Update clock every second */
+                g_demo_last_update = now;
+
+                /* Get real system time */
+                time_t t = time(NULL);
+                struct tm* tm_info = localtime(&t);
+
+                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false);
+                printf("Demo: Clock -> %d:%02d\n", tm_info->tm_hour, tm_info->tm_min);
+
+                g_demo_sub_state++;
+                if (g_demo_sub_state >= 5) {  /* Show clock for 5 seconds */
+                    g_demo_sub_state = 0;
+                    g_demo_state = DEMO_WEATHER;
+                    printf("Demo: Switching to WEATHER mode\n");
+                }
+            }
+            break;
+
+        case DEMO_WEATHER:
+            if (elapsed >= 2000) {  /* Change weather every 2 seconds */
+                g_demo_last_update = now;
+
+                face_renderer_show_weather(
+                    weather_conditions[g_demo_sub_state].temp,
+                    weather_conditions[g_demo_sub_state].icon,
+                    weather_conditions[g_demo_sub_state].desc
+                );
+                printf("Demo: Weather -> %s %s\n",
+                       weather_conditions[g_demo_sub_state].temp,
+                       weather_conditions[g_demo_sub_state].desc);
+
+                g_demo_sub_state++;
+                if (g_demo_sub_state >= num_weather) {
+                    g_demo_sub_state = 0;
+                    g_demo_state = DEMO_TIMER;
+                    g_demo_timer_seconds = 10;
+                    printf("Demo: Switching to TIMER mode\n");
+                }
+            }
+            break;
+
+        case DEMO_TIMER:
+            if (elapsed >= DEMO_TIMER_INTERVAL_MS) {
+                g_demo_last_update = now;
+
+                int mins = g_demo_timer_seconds / 60;
+                int secs = g_demo_timer_seconds % 60;
+                face_renderer_show_timer(mins, secs, "Demo", true);
+                printf("Demo: Timer -> %d:%02d\n", mins, secs);
+
+                g_demo_timer_seconds--;
+                if (g_demo_timer_seconds < 0) {
+                    g_demo_sub_state = 0;
+                    g_demo_state = DEMO_ANIMATION;
+                    printf("Demo: Switching to ANIMATION mode\n");
+                }
+            }
+            break;
+
+        case DEMO_ANIMATION:
+            if (elapsed >= 2000) {  /* Change animation every 2 seconds */
+                g_demo_last_update = now;
+
+                face_renderer_show_animation(animations[g_demo_sub_state]);
+                printf("Demo: Animation -> %d\n", animations[g_demo_sub_state]);
+
+                g_demo_sub_state++;
+                if (g_demo_sub_state >= num_animations) {
+                    g_demo_sub_state = 0;
+                    g_demo_state = DEMO_EMOTIONS;
+                    /* Return to face mode before cycling emotions */
+                    face_renderer_clear_display();
+                    printf("Demo: Switching back to EMOTIONS mode\n");
+                }
+            }
+            break;
+
+        default:
+            g_demo_state = DEMO_EMOTIONS;
+            break;
+    }
+}
+
+/* Manual control state */
+static int g_manual_emotion = 0;
+static int g_manual_weather = 0;
+static int g_manual_animation = 0;
+
+/**
+ * Keyboard handler for manual control
+ */
+static void keyboard_handler(int key)
+{
+    /* Emotion names */
+    static const char* emotions[] = {
+        "neutral", "happy", "sad", "angry", "surprised",
+        "thinking", "confused", "excited", "cat"
+    };
+    static const int num_emotions = 9;
+
+    switch (key) {
+        /* Number keys 1-9 for emotions */
+        case SDLK_1: case SDLK_2: case SDLK_3: case SDLK_4: case SDLK_5:
+        case SDLK_6: case SDLK_7: case SDLK_8: case SDLK_9:
+            g_demo_mode = false;
+            g_manual_emotion = key - SDLK_1;
+            if (g_manual_emotion < num_emotions) {
+                face_renderer_clear_display();
+                face_renderer_set_emotion_str(emotions[g_manual_emotion]);
+                printf("Manual: Emotion -> %s\n", emotions[g_manual_emotion]);
+            }
+            break;
+
+        /* F = Face mode (cycle emotions with arrows) */
+        case SDLK_f:
+            g_demo_mode = false;
+            face_renderer_clear_display();
+            face_renderer_set_emotion_str(emotions[g_manual_emotion]);
+            printf("Manual: Face mode, emotion=%s\n", emotions[g_manual_emotion]);
+            break;
+
+        /* C = Clock mode */
+        case SDLK_c:
+            g_demo_mode = false;
+            {
+                time_t t = time(NULL);
+                struct tm* tm_info = localtime(&t);
+                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false);
+                printf("Manual: Clock mode -> %d:%02d\n", tm_info->tm_hour, tm_info->tm_min);
+            }
+            break;
+
+        /* W = Weather mode (cycle with arrows) */
+        case SDLK_w:
+            g_demo_mode = false;
+            {
+                static const struct {
+                    const char* temp;
+                    weather_icon_t icon;
+                    const char* desc;
+                } weather[] = {
+                    {"72°F", WEATHER_ICON_SUNNY, "Sunny"},
+                    {"65°F", WEATHER_ICON_PARTLY_CLOUDY, "Partly Cloudy"},
+                    {"58°F", WEATHER_ICON_CLOUDY, "Cloudy"},
+                    {"52°F", WEATHER_ICON_RAINY, "Rainy"},
+                    {"28°F", WEATHER_ICON_SNOWY, "Snowy"},
+                };
+                face_renderer_show_weather(
+                    weather[g_manual_weather].temp,
+                    weather[g_manual_weather].icon,
+                    weather[g_manual_weather].desc
+                );
+                printf("Manual: Weather mode -> %s %s\n",
+                       weather[g_manual_weather].temp,
+                       weather[g_manual_weather].desc);
+            }
+            break;
+
+        /* T = Timer mode */
+        case SDLK_t:
+            g_demo_mode = false;
+            face_renderer_show_timer(25, 0, "Focus", true);
+            printf("Manual: Timer mode -> 25:00\n");
+            break;
+
+        /* A = Animation mode (cycle with arrows) */
+        case SDLK_a:
+            g_demo_mode = false;
+            {
+                static const char* anim_names[] = {"Rain", "Snow", "Stars", "Matrix"};
+                face_renderer_show_animation((animation_type_t)g_manual_animation);
+                printf("Manual: Animation mode -> %s\n", anim_names[g_manual_animation]);
+            }
+            break;
+
+        /* Space = Toggle demo mode */
+        case SDLK_SPACE:
+            g_demo_mode = !g_demo_mode;
+            if (g_demo_mode) {
+                g_demo_state = DEMO_EMOTIONS;
+                g_demo_sub_state = 0;
+                g_demo_last_update = get_time_ms();
+                face_renderer_clear_display();
+                printf("Demo mode ENABLED\n");
+            } else {
+                printf("Demo mode DISABLED (use keys to control)\n");
+            }
+            break;
+
+        /* Left/Right arrows = cycle sub-state */
+        case SDLK_LEFT:
+        case SDLK_RIGHT:
+            {
+                int delta = (key == SDLK_RIGHT) ? 1 : -1;
+                display_mode_t mode = face_renderer_get_mode();
+
+                if (mode == DISPLAY_MODE_FACE) {
+                    g_manual_emotion = (g_manual_emotion + delta + num_emotions) % num_emotions;
+                    face_renderer_set_emotion_str(emotions[g_manual_emotion]);
+                    printf("Cycle: Emotion -> %s\n", emotions[g_manual_emotion]);
+                } else if (mode == DISPLAY_MODE_WEATHER) {
+                    g_manual_weather = (g_manual_weather + delta + 5) % 5;
+                    /* Re-trigger W key handler */
+                    keyboard_handler(SDLK_w);
+                } else if (mode == DISPLAY_MODE_ANIMATION) {
+                    g_manual_animation = (g_manual_animation + delta + 4) % 4;
+                    keyboard_handler(SDLK_a);
+                }
+            }
+            break;
+
+        /* B = Force blink */
+        case SDLK_b:
+            face_renderer_blink();
+            printf("Manual: Blink!\n");
+            break;
+
+        /* H = Help */
+        case SDLK_h:
+            printf("\n=== Keyboard Controls ===\n");
+            printf("1-9    : Set emotion (1=neutral, 2=happy, ...9=cat)\n");
+            printf("F      : Face mode\n");
+            printf("C      : Clock mode\n");
+            printf("W      : Weather mode\n");
+            printf("T      : Timer mode\n");
+            printf("A      : Animation mode\n");
+            printf("B      : Force blink\n");
+            printf("SPACE  : Toggle demo mode\n");
+            printf("LEFT/RIGHT : Cycle through current mode\n");
+            printf("ESC    : Quit\n");
+            printf("=========================\n\n");
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
  * Signal handler for graceful shutdown
  */
 static void signal_handler(int sig)
@@ -239,14 +647,26 @@ static void print_usage(const char* prog)
     printf("Usage: %s [host] [port]\n", prog);
     printf("  host: Server hostname (default: %s)\n", DEFAULT_HOST);
     printf("  port: Server port (default: %d)\n", DEFAULT_PORT);
-    printf("\nControls:\n");
-    printf("  ESC or close window: Exit\n");
-    printf("  Mouse drag: Pet the face\n");
+    printf("\nKeyboard Controls:\n");
+    printf("  1-9        : Set emotion (1=neutral, 2=happy, ...9=cat)\n");
+    printf("  F          : Face mode\n");
+    printf("  C          : Clock mode (real time)\n");
+    printf("  W          : Weather mode\n");
+    printf("  T          : Timer mode\n");
+    printf("  A          : Animation mode\n");
+    printf("  B          : Force blink\n");
+    printf("  SPACE      : Toggle demo mode on/off\n");
+    printf("  LEFT/RIGHT : Cycle through current mode\n");
+    printf("  H          : Show help\n");
+    printf("  ESC        : Quit\n");
+    printf("\nMouse:\n");
+    printf("  Drag up/down : Pet the face\n");
 }
 
 int main(int argc, char* argv[])
 {
     printf("Luna Simulator starting...\n");
+    fflush(stdout);
 
     /* Parse arguments */
     if (argc > 1) {
@@ -288,6 +708,7 @@ int main(int argc, char* argv[])
         return 1;
     }
     sdl_mouse_set_callback(touch_callback);
+    sdl_display_set_keyboard_callback(keyboard_handler);
 
     /* Initialize audio */
     if (!sdl_audio_init()) {
@@ -308,14 +729,19 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    /* Start face animation */
-    face_renderer_start();
+    /* DON'T start face render task - we'll tick manually from main loop
+     * (LVGL is not thread-safe, so background render task causes issues) */
+    /* face_renderer_start(); */
     face_renderer_set_emotion(EMOTION_NEUTRAL);
+
+    /* Initialize demo mode timer */
+    g_demo_last_update = get_time_ms();
+    printf("Demo mode enabled - will cycle through emotions and display modes\n");
 
     /* Initialize WebSocket client */
     if (!ws_client_init(ws_event_handler)) {
         fprintf(stderr, "Failed to initialize WebSocket client\n");
-        face_renderer_stop();
+        /* face_renderer_stop(); - not started in simulator */
         face_renderer_deinit();
         sdl_audio_deinit();
         sdl_mouse_deinit();
@@ -328,16 +754,30 @@ int main(int argc, char* argv[])
 
     printf("Simulator running. Press ESC or close window to exit.\n");
 
+    /* Track time for face renderer tick */
+    uint32_t last_render_time = get_time_ms();
+
     /* Main loop */
     while (g_running && !sdl_display_quit_requested()) {
+        /* Calculate delta time for face renderer */
+        uint32_t now = get_time_ms();
+        uint32_t delta_ms = now - last_render_time;
+        last_render_time = now;
+
         /* Update LVGL tick */
         update_lvgl_tick();
 
         /* Handle SDL events */
         sdl_display_poll_events();
 
-        /* Service WebSocket */
-        ws_client_service(0);  /* Non-blocking */
+        /* Service WebSocket (skipped when disconnected to avoid blocking) */
+        ws_client_service(0);
+
+        /* Update demo mode (when not connected) */
+        update_demo_mode();
+
+        /* Tick face renderer (updates animation, widgets) */
+        face_renderer_tick(delta_ms);
 
         /* Run LVGL tasks */
         lv_timer_handler();
@@ -352,7 +792,7 @@ int main(int argc, char* argv[])
     ws_client_disconnect();
     ws_client_deinit();
 
-    face_renderer_stop();
+    /* face_renderer_stop(); - not started in simulator */
     face_renderer_deinit();
 
     sdl_audio_deinit();
