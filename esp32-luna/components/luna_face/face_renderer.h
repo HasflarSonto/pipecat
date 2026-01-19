@@ -23,7 +23,34 @@ typedef enum {
     DISPLAY_MODE_FACE,        // Animated face (default)
     DISPLAY_MODE_TEXT,        // Text display
     DISPLAY_MODE_PIXEL_ART,   // Pixel art grid
+    DISPLAY_MODE_WEATHER,     // Weather display (temp + icon)
+    DISPLAY_MODE_TIMER,       // Pomodoro/countdown timer
+    DISPLAY_MODE_CLOCK,       // Time display
+    DISPLAY_MODE_ANIMATION,   // Custom animations (rain, snow, etc.)
 } display_mode_t;
+
+/**
+ * @brief Weather icon type
+ */
+typedef enum {
+    WEATHER_ICON_SUNNY,
+    WEATHER_ICON_CLOUDY,
+    WEATHER_ICON_RAINY,
+    WEATHER_ICON_SNOWY,
+    WEATHER_ICON_STORMY,
+    WEATHER_ICON_FOGGY,
+    WEATHER_ICON_PARTLY_CLOUDY,
+} weather_icon_t;
+
+/**
+ * @brief Animation type
+ */
+typedef enum {
+    ANIMATION_RAIN,
+    ANIMATION_SNOW,
+    ANIMATION_STARS,
+    ANIMATION_MATRIX,
+} animation_type_t;
 
 /**
  * @brief Font size for text mode
@@ -150,6 +177,44 @@ void face_renderer_show_pixel_art(const uint32_t *pixels, size_t count,
  * @brief Clear pixel art and return to face mode
  */
 void face_renderer_clear_pixel_art(void);
+
+/**
+ * @brief Show weather display
+ * @param temp Temperature string (e.g., "72°F")
+ * @param icon Weather icon type
+ * @param description Weather description (e.g., "Sunny")
+ */
+void face_renderer_show_weather(const char *temp, weather_icon_t icon,
+                                 const char *description);
+
+/**
+ * @brief Show timer/pomodoro display
+ * @param minutes Total minutes
+ * @param seconds Current seconds remaining
+ * @param label Timer label (e.g., "Focus", "Break")
+ * @param is_running True if timer is active
+ */
+void face_renderer_show_timer(int minutes, int seconds, const char *label,
+                               bool is_running);
+
+/**
+ * @brief Show clock display
+ * @param hours Hour (0-23)
+ * @param minutes Minute (0-59)
+ * @param is_24h True for 24-hour format
+ */
+void face_renderer_show_clock(int hours, int minutes, bool is_24h);
+
+/**
+ * @brief Show animation
+ * @param type Animation type
+ */
+void face_renderer_show_animation(animation_type_t type);
+
+/**
+ * @brief Clear any special display and return to face mode
+ */
+void face_renderer_clear_display(void);
 
 /**
  * @brief Get current display mode

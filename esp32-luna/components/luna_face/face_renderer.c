@@ -418,8 +418,15 @@ static void update_face_widgets(void)
     int mouth_width = (int)(params->mouth_width * SCALE_X);
     int line_width = (int)(6 * SCALE_Y);
 
-    // Hide mouth_bg - not using this approach anymore
-    lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+    // Position mouth_bg as a thin strip above the mouth to catch ghost artifacts
+    // The artifacts appear just above the mouth arc area when it moves
+    int mouth_bg_width = 80;    // Just wide enough for the mouth arc area
+    int mouth_bg_height = 30;   // Thin strip to catch artifacts without clipping eyes
+    int mouth_bg_x = s_renderer.center_x - mouth_bg_width / 2 + offset_x;
+    int mouth_bg_y = s_renderer.mouth_base_y - 50 + offset_y;  // Above the mouth
+    lv_obj_set_pos(s_renderer.mouth_bg, mouth_bg_x, mouth_bg_y);
+    lv_obj_set_size(s_renderer.mouth_bg, mouth_bg_width, mouth_bg_height);
+    lv_obj_clear_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
 
     // Calculate mouth curve category
     int curve_category;
@@ -1325,6 +1332,187 @@ void face_renderer_clear_pixel_art(void)
 
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Pixel art cleared");
+    }
+}
+
+// ============================================================================
+// New Display Screens (Weather, Timer, Clock, Animation)
+// ============================================================================
+
+void face_renderer_show_weather(const char *temp, weather_icon_t icon,
+                                 const char *description)
+{
+    if (!s_renderer.initialized) return;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_WEATHER;
+
+        if (bsp_display_lock(100)) {
+            // Hide face widgets
+            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+
+            // TODO: Implement weather display widgets
+            // For now, use text display as placeholder
+            // Weather icon (sun, cloud, rain) should be drawn with LVGL shapes
+            // Temperature in large font
+            // Description in smaller font below
+
+            // Temporary: Show as text
+            char weather_text[128];
+            snprintf(weather_text, sizeof(weather_text), "%s\n%s", temp, description ? description : "");
+
+            // Use existing text label
+            lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_renderer.text_label, weather_text);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_center(s_renderer.text_label);
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Weather display: %s, icon=%d", temp, icon);
+    }
+}
+
+void face_renderer_show_timer(int minutes, int seconds, const char *label,
+                               bool is_running)
+{
+    if (!s_renderer.initialized) return;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_TIMER;
+
+        if (bsp_display_lock(100)) {
+            // Hide face widgets
+            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+
+            // Format time as MM:SS
+            char timer_text[64];
+            snprintf(timer_text, sizeof(timer_text), "%02d:%02d", minutes, seconds);
+
+            // Use existing text label
+            lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_renderer.text_label, timer_text);
+            lv_obj_set_style_text_color(s_renderer.text_label,
+                is_running ? lv_color_white() : lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_center(s_renderer.text_label);
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Timer display: %02d:%02d %s", minutes, seconds, label ? label : "");
+    }
+}
+
+void face_renderer_show_clock(int hours, int minutes, bool is_24h)
+{
+    if (!s_renderer.initialized) return;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_CLOCK;
+
+        if (bsp_display_lock(100)) {
+            // Hide face widgets
+            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+
+            // Format time
+            char time_text[32];
+            if (is_24h) {
+                snprintf(time_text, sizeof(time_text), "%02d:%02d", hours, minutes);
+            } else {
+                int display_hours = hours % 12;
+                if (display_hours == 0) display_hours = 12;
+                const char* ampm = hours >= 12 ? "PM" : "AM";
+                snprintf(time_text, sizeof(time_text), "%d:%02d %s", display_hours, minutes, ampm);
+            }
+
+            // Use existing text label
+            lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_renderer.text_label, time_text);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_center(s_renderer.text_label);
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Clock display: %02d:%02d (24h=%d)", hours, minutes, is_24h);
+    }
+}
+
+void face_renderer_show_animation(animation_type_t type)
+{
+    if (!s_renderer.initialized) return;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_ANIMATION;
+
+        if (bsp_display_lock(100)) {
+            // Hide face widgets
+            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+
+            // TODO: Implement animations
+            // ANIMATION_RAIN: Falling blue dots
+            // ANIMATION_SNOW: Falling white dots (slower)
+            // ANIMATION_STARS: Twinkling dots
+            // ANIMATION_MATRIX: Green falling characters
+
+            // Placeholder text
+            const char* anim_names[] = {"Rain", "Snow", "Stars", "Matrix"};
+            lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_renderer.text_label, anim_names[type]);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_obj_center(s_renderer.text_label);
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Animation display: type=%d", type);
+    }
+}
+
+void face_renderer_clear_display(void)
+{
+    if (!s_renderer.initialized) return;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        display_mode_t prev_mode = s_renderer.mode;
+        s_renderer.mode = DISPLAY_MODE_FACE;
+
+        if (bsp_display_lock(100)) {
+            // Hide text label
+            lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+
+            // Show face widgets
+            lv_obj_clear_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+
+            // Update background
+            lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(BG_COLOR), 0);
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Display cleared (was mode %d)", prev_mode);
     }
 }
 

@@ -27,6 +27,11 @@ typedef enum {
     LUNA_CMD_PIXEL_ART_CLEAR,  // {"cmd": "pixel_art_clear"}
     LUNA_CMD_AUDIO_START,      // {"cmd": "audio_start"}
     LUNA_CMD_AUDIO_STOP,       // {"cmd": "audio_stop"}
+    LUNA_CMD_WEATHER,          // {"cmd": "weather", "temp": "72°F", "icon": "sunny", "desc": "Clear"}
+    LUNA_CMD_TIMER,            // {"cmd": "timer", "minutes": 25, "seconds": 0, "label": "Focus"}
+    LUNA_CMD_CLOCK,            // {"cmd": "clock", "hours": 14, "minutes": 30, "is_24h": true}
+    LUNA_CMD_ANIMATION,        // {"cmd": "animation", "type": "rain"}
+    LUNA_CMD_CLEAR_DISPLAY,    // {"cmd": "clear_display"}
 } luna_cmd_type_t;
 
 /**
@@ -83,6 +88,41 @@ typedef struct {
 } luna_cmd_pixel_art_t;
 
 /**
+ * @brief Weather command data
+ */
+typedef struct {
+    char temp[16];        // Temperature string (e.g., "72°F")
+    char icon[16];        // Icon name: sunny, cloudy, rainy, snowy, stormy, foggy, partly_cloudy
+    char description[32]; // Description (e.g., "Clear skies")
+} luna_cmd_weather_t;
+
+/**
+ * @brief Timer command data
+ */
+typedef struct {
+    int minutes;          // Minutes remaining
+    int seconds;          // Seconds remaining
+    char label[32];       // Label (e.g., "Focus", "Break")
+    bool is_running;      // Timer is active
+} luna_cmd_timer_t;
+
+/**
+ * @brief Clock command data
+ */
+typedef struct {
+    int hours;            // 0-23
+    int minutes;          // 0-59
+    bool is_24h;          // Use 24-hour format
+} luna_cmd_clock_t;
+
+/**
+ * @brief Animation command data
+ */
+typedef struct {
+    char type[16];        // Animation type: rain, snow, stars, matrix
+} luna_cmd_animation_t;
+
+/**
  * @brief Parsed command structure
  */
 typedef struct {
@@ -92,6 +132,10 @@ typedef struct {
         luna_cmd_gaze_t gaze;
         luna_cmd_text_t text;
         luna_cmd_pixel_art_t pixel_art;
+        luna_cmd_weather_t weather;
+        luna_cmd_timer_t timer;
+        luna_cmd_clock_t clock;
+        luna_cmd_animation_t animation;
     } data;
 } luna_cmd_t;
 

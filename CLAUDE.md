@@ -236,15 +236,31 @@ idf.py fullclean
 | `components/audio/audio_playback.c` | Speaker output |
 | `sdkconfig.defaults` | Build configuration |
 
-### Features
+### Display Modes
 
-- **Animated Face**: Widget-based LVGL rendering with smooth transitions
-- **Emotions**: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
-- **Cat Face**: `:3` mouth using dual arcs + angled whiskers (lv_line)
-- **Touch Petting**: Move finger up/down to make face "giggle", auto-switches to cat face
-- **Gaze Tracking**: Eyes follow gaze coordinates from server
-- **Text Display**: Show text/numbers on screen
-- **Audio Streaming**: Bidirectional 16kHz PCM audio over WebSocket
+The ESP32 has three display modes controlled by `face_renderer.c`:
+
+| Mode | Enum | Description |
+|------|------|-------------|
+| **Face** | `DISPLAY_MODE_FACE` | Animated face with emotions, gaze tracking, petting |
+| **Text** | `DISPLAY_MODE_TEXT` | Text/numbers/emojis with configurable font, color |
+| **Pixel Art** | `DISPLAY_MODE_PIXEL_ART` | 12x16 grid for drawings |
+
+**Emotions** (9 total): neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
+
+**Cat Face**: `:3` mouth using dual arcs + angled whiskers (lv_line), triggered by petting
+
+### LLM Tools (Display-Related)
+
+Tools the AI can call in `my_bot.py`:
+
+| Tool | Parameters | Description |
+|------|-----------|-------------|
+| `set_emotion` | emotion | Set face emotion |
+| `display_text` | text, font_size, color, background, duration | Show text, auto-clears |
+| `draw_pixel_art` | pixels (12x16), background, duration | Draw pixel art |
+| `clear_drawing` | - | Clear pixel art → face |
+| `clear_text_display` | - | Clear text → face |
 
 ### WebSocket Protocol
 
@@ -252,12 +268,14 @@ Connects to `ws://<SERVER_IP>:8765/luna-esp32`
 
 **Server → ESP32 (JSON text frames):**
 ```json
-{"type": "emotion", "emotion": "happy"}
-{"type": "gaze", "x": 0.5, "y": 0.5}
-{"type": "text", "content": "Hello", "size": "large", "color": "#FFFFFF"}
-{"type": "text_clear"}
-{"type": "audio_start"}
-{"type": "audio_stop"}
+{"cmd": "emotion", "value": "happy"}
+{"cmd": "gaze", "x": 0.5, "y": 0.5}
+{"cmd": "text", "content": "Hello", "size": "large", "color": "#FFFFFF", "bg": "#1E1E28"}
+{"cmd": "text_clear"}
+{"cmd": "pixel_art", "pixels": [{"x": 0, "y": 0, "c": "#FF0000"}], "bg": "#1E1E28"}
+{"cmd": "pixel_art_clear"}
+{"cmd": "audio_start"}
+{"cmd": "audio_stop"}
 ```
 
 **Server → ESP32 (Binary frames):**
@@ -265,6 +283,57 @@ Connects to `ws://<SERVER_IP>:8765/luna-esp32`
 
 **ESP32 → Server (Binary frames):**
 - Raw 16kHz 16-bit mono PCM audio from microphone
+
+### Adding New Display Screens
+
+To add a new display screen (e.g., weather, timer, clock):
+
+**1. Add display mode enum** in `face_renderer.c`:
+```c
+typedef enum {
+    DISPLAY_MODE_FACE,
+    DISPLAY_MODE_TEXT,
+    DISPLAY_MODE_PIXEL_ART,
+    DISPLAY_MODE_WEATHER,    // NEW
+    DISPLAY_MODE_TIMER,      // NEW
+} display_mode_t;
+```
+
+**2. Add WebSocket command** in `luna_protocol.c`:
+```c
+else if (strcmp(cmd, "weather") == 0) {
+    const char* temp = cJSON_GetStringValue(cJSON_GetObjectItem(root, "temp"));
+    const char* icon = cJSON_GetStringValue(cJSON_GetObjectItem(root, "icon"));
+    face_renderer_show_weather(temp, icon);
+}
+```
+
+**3. Add renderer function** in `face_renderer.c`:
+```c
+void face_renderer_show_weather(const char* temp, const char* icon) {
+    s_renderer.display_mode = DISPLAY_MODE_WEATHER;
+    // Create/update LVGL widgets for weather display
+}
+```
+
+**4. Add LLM tool** in `my_bot.py`:
+```python
+async def show_weather(self, function_name, tool_call_id, args, llm, context, result_callback):
+    await self._send_esp32_command({
+        "cmd": "weather",
+        "temp": args.get("temp", "72°F"),
+        "icon": args.get("icon", "sunny")
+    })
+    await result_callback({"status": "displayed"})
+```
+
+**5. Register tool** in LLM context:
+```python
+tools = [
+    # ... existing tools ...
+    {"type": "function", "function": {"name": "show_weather", "description": "Show weather on display", "parameters": {...}}}
+]
+```
 
 ### Configuration
 

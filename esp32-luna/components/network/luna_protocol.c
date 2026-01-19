@@ -189,6 +189,68 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
         cmd->type = LUNA_CMD_AUDIO_STOP;
         ESP_LOGD(TAG, "Parsed audio_stop");
     }
+    else if (strcmp(cmd_str, "weather") == 0) {
+        cmd->type = LUNA_CMD_WEATHER;
+        cJSON *temp = cJSON_GetObjectItem(root, "temp");
+        cJSON *icon = cJSON_GetObjectItem(root, "icon");
+        cJSON *desc = cJSON_GetObjectItem(root, "desc");
+
+        if (temp && cJSON_IsString(temp)) {
+            strncpy(cmd->data.weather.temp, temp->valuestring,
+                    sizeof(cmd->data.weather.temp) - 1);
+        }
+        if (icon && cJSON_IsString(icon)) {
+            strncpy(cmd->data.weather.icon, icon->valuestring,
+                    sizeof(cmd->data.weather.icon) - 1);
+        }
+        if (desc && cJSON_IsString(desc)) {
+            strncpy(cmd->data.weather.description, desc->valuestring,
+                    sizeof(cmd->data.weather.description) - 1);
+        }
+        ESP_LOGD(TAG, "Parsed weather: %s %s", cmd->data.weather.temp, cmd->data.weather.icon);
+    }
+    else if (strcmp(cmd_str, "timer") == 0) {
+        cmd->type = LUNA_CMD_TIMER;
+        cJSON *minutes = cJSON_GetObjectItem(root, "minutes");
+        cJSON *seconds = cJSON_GetObjectItem(root, "seconds");
+        cJSON *label = cJSON_GetObjectItem(root, "label");
+        cJSON *running = cJSON_GetObjectItem(root, "running");
+
+        cmd->data.timer.minutes = (minutes && cJSON_IsNumber(minutes)) ? minutes->valueint : 0;
+        cmd->data.timer.seconds = (seconds && cJSON_IsNumber(seconds)) ? seconds->valueint : 0;
+        cmd->data.timer.is_running = (running && cJSON_IsBool(running)) ? cJSON_IsTrue(running) : true;
+
+        if (label && cJSON_IsString(label)) {
+            strncpy(cmd->data.timer.label, label->valuestring,
+                    sizeof(cmd->data.timer.label) - 1);
+        }
+        ESP_LOGD(TAG, "Parsed timer: %d:%02d", cmd->data.timer.minutes, cmd->data.timer.seconds);
+    }
+    else if (strcmp(cmd_str, "clock") == 0) {
+        cmd->type = LUNA_CMD_CLOCK;
+        cJSON *hours = cJSON_GetObjectItem(root, "hours");
+        cJSON *minutes = cJSON_GetObjectItem(root, "minutes");
+        cJSON *is_24h = cJSON_GetObjectItem(root, "is_24h");
+
+        cmd->data.clock.hours = (hours && cJSON_IsNumber(hours)) ? hours->valueint : 12;
+        cmd->data.clock.minutes = (minutes && cJSON_IsNumber(minutes)) ? minutes->valueint : 0;
+        cmd->data.clock.is_24h = (is_24h && cJSON_IsBool(is_24h)) ? cJSON_IsTrue(is_24h) : false;
+        ESP_LOGD(TAG, "Parsed clock: %02d:%02d", cmd->data.clock.hours, cmd->data.clock.minutes);
+    }
+    else if (strcmp(cmd_str, "animation") == 0) {
+        cmd->type = LUNA_CMD_ANIMATION;
+        cJSON *type = cJSON_GetObjectItem(root, "type");
+
+        if (type && cJSON_IsString(type)) {
+            strncpy(cmd->data.animation.type, type->valuestring,
+                    sizeof(cmd->data.animation.type) - 1);
+        }
+        ESP_LOGD(TAG, "Parsed animation: %s", cmd->data.animation.type);
+    }
+    else if (strcmp(cmd_str, "clear_display") == 0) {
+        cmd->type = LUNA_CMD_CLEAR_DISPLAY;
+        ESP_LOGD(TAG, "Parsed clear_display");
+    }
     else {
         ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
     }

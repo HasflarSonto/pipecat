@@ -321,6 +321,47 @@ static void luna_cmd_handler(const luna_cmd_t *cmd, void *ctx)
             audio_capture_stop();
             break;
 
+        case LUNA_CMD_WEATHER: {
+            ESP_LOGI(TAG, "Weather: %s %s", cmd->data.weather.temp, cmd->data.weather.icon);
+            // Map icon string to enum
+            weather_icon_t icon = WEATHER_ICON_SUNNY;
+            if (strcmp(cmd->data.weather.icon, "cloudy") == 0) icon = WEATHER_ICON_CLOUDY;
+            else if (strcmp(cmd->data.weather.icon, "rainy") == 0) icon = WEATHER_ICON_RAINY;
+            else if (strcmp(cmd->data.weather.icon, "snowy") == 0) icon = WEATHER_ICON_SNOWY;
+            else if (strcmp(cmd->data.weather.icon, "stormy") == 0) icon = WEATHER_ICON_STORMY;
+            else if (strcmp(cmd->data.weather.icon, "foggy") == 0) icon = WEATHER_ICON_FOGGY;
+            else if (strcmp(cmd->data.weather.icon, "partly_cloudy") == 0) icon = WEATHER_ICON_PARTLY_CLOUDY;
+            face_renderer_show_weather(cmd->data.weather.temp, icon, cmd->data.weather.description);
+            break;
+        }
+
+        case LUNA_CMD_TIMER:
+            ESP_LOGI(TAG, "Timer: %d:%02d %s", cmd->data.timer.minutes, cmd->data.timer.seconds, cmd->data.timer.label);
+            face_renderer_show_timer(cmd->data.timer.minutes, cmd->data.timer.seconds,
+                                     cmd->data.timer.label, cmd->data.timer.is_running);
+            break;
+
+        case LUNA_CMD_CLOCK:
+            ESP_LOGI(TAG, "Clock: %02d:%02d", cmd->data.clock.hours, cmd->data.clock.minutes);
+            face_renderer_show_clock(cmd->data.clock.hours, cmd->data.clock.minutes, cmd->data.clock.is_24h);
+            break;
+
+        case LUNA_CMD_ANIMATION: {
+            ESP_LOGI(TAG, "Animation: %s", cmd->data.animation.type);
+            // Map type string to enum
+            animation_type_t anim = ANIMATION_RAIN;
+            if (strcmp(cmd->data.animation.type, "snow") == 0) anim = ANIMATION_SNOW;
+            else if (strcmp(cmd->data.animation.type, "stars") == 0) anim = ANIMATION_STARS;
+            else if (strcmp(cmd->data.animation.type, "matrix") == 0) anim = ANIMATION_MATRIX;
+            face_renderer_show_animation(anim);
+            break;
+        }
+
+        case LUNA_CMD_CLEAR_DISPLAY:
+            ESP_LOGI(TAG, "Clear display");
+            face_renderer_clear_display();
+            break;
+
         default:
             ESP_LOGW(TAG, "Unknown command: %d", cmd->type);
             break;
