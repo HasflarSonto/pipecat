@@ -424,20 +424,28 @@ static void update_face_widgets(void)
         ESP_LOGI(TAG, "Mouth curve changed: %d -> %d (mouth_curve=%.2f)",
                  s_renderer.last_mouth_curve, curve_category, params->mouth_curve);
 
-        // Hide all mouth widgets first (simple hide - no invalidation to avoid artifacts)
+        // Hide all mouth widgets and invalidate each individually (small areas to avoid DMA overflow)
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(s_renderer.mouth_line);
+
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(s_renderer.mouth_arc);
 
         for (int i = 0; i < 5; i++) {
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(s_renderer.mouth_dots[i]);
         }
 
         // Hide whiskers and cat arcs
         for (int i = 0; i < 6; i++) {
             lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_invalidate(s_renderer.whisker_lines[i]);
         }
         lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(s_renderer.cat_arc_top);
+
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_invalidate(s_renderer.cat_arc_bottom);
 
         if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
