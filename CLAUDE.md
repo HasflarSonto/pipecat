@@ -184,3 +184,115 @@ Audio/Video ←───────┼─────────┤ Pipeline:
 ### Known Issues / TODOs
 
 - **Wake Word Filter**: The `WakeWordFilter` class exists in `my_bot.py` but is disabled. It has lifecycle issues with pipecat's `FrameProcessor` (StartFrame handling). Re-enable when proper start handling is figured out.
+
+---
+
+## ESP32-Luna (Embedded Hardware Client)
+
+Standalone ESP32-S3 hardware client that connects to the pipecat backend via WebSocket. Located in `esp32-luna/`.
+
+### Hardware
+
+- **Board**: Waveshare ESP32-S3-Touch-AMOLED-2.06
+- **Display**: 502x410 AMOLED (SH8601, QSPI, RGB565)
+- **Touch**: FT5x06 capacitive touchscreen
+- **Audio**: ES8311 codec (I2S), speaker + microphone
+- **Power**: AXP2101 PMU with battery support
+- **Memory**: 8MB PSRAM, 32MB Flash
+
+### Development Commands
+
+```bash
+cd esp32-luna
+
+# Source ESP-IDF environment
+source ~/esp/esp-idf/export.sh
+
+# Build
+idf.py build
+
+# Flash (auto-detects port)
+./flash.sh
+# Or manually:
+idf.py -p /dev/cu.usbmodem1101 flash
+
+# Monitor serial output
+idf.py -p /dev/cu.usbmodem1101 monitor
+
+# Clean build
+idf.py fullclean
+```
+
+### Key Files
+
+| File | Purpose |
+|------|---------|
+| `main/main.c` | Entry point, WiFi/WebSocket connection, event handlers |
+| `components/luna_face/face_renderer.c` | LVGL-based face rendering, emotions, petting |
+| `components/luna_face/emotions.c` | Emotion configurations (eye size, mouth curve, etc.) |
+| `components/network/ws_client.c` | WebSocket client for server communication |
+| `components/network/luna_protocol.c` | JSON command parsing |
+| `components/audio/audio_capture.c` | Microphone input (16kHz mono) |
+| `components/audio/audio_playback.c` | Speaker output |
+| `sdkconfig.defaults` | Build configuration |
+
+### Features
+
+- **Animated Face**: Widget-based LVGL rendering with smooth transitions
+- **Emotions**: neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
+- **Cat Face**: `:3` mouth using dual arcs + angled whiskers (lv_line)
+- **Touch Petting**: Move finger up/down to make face "giggle", auto-switches to cat face
+- **Gaze Tracking**: Eyes follow gaze coordinates from server
+- **Text Display**: Show text/numbers on screen
+- **Audio Streaming**: Bidirectional 16kHz PCM audio over WebSocket
+
+### WebSocket Protocol
+
+Connects to `ws://<SERVER_IP>:8765/luna-esp32`
+
+**Server → ESP32 (JSON text frames):**
+```json
+{"type": "emotion", "emotion": "happy"}
+{"type": "gaze", "x": 0.5, "y": 0.5}
+{"type": "text", "content": "Hello", "size": "large", "color": "#FFFFFF"}
+{"type": "text_clear"}
+{"type": "audio_start"}
+{"type": "audio_stop"}
+```
+
+**Server → ESP32 (Binary frames):**
+- Raw 16kHz 16-bit PCM audio for playback
+
+**ESP32 → Server (Binary frames):**
+- Raw 16kHz 16-bit mono PCM audio from microphone
+
+### Configuration
+
+WiFi and server settings in `main/Kconfig.projbuild` (menuconfig) or set via:
+```bash
+idf.py menuconfig
+# Navigate to: Luna Configuration
+```
+
+### Architecture
+
+```
+ESP32-Luna                          Pipecat Backend
+──────────                          ───────────────
+Touchscreen ──→ Petting detection
+                     ↓
+Face Renderer ←── Emotion/Gaze ←─── WebSocket ←─── LLM tools
+     ↓                                  ↑
+  AMOLED Display                        │
+                                        │
+Microphone ───→ Audio Capture ─────────→│ (binary PCM)
+                                        │
+Speaker ←───── Audio Playback ←────────┘ (binary PCM)
+```
+
+### Display Constraints
+
+- **Arc size limit**: Keep arcs ≤60px square to avoid SPI DMA overflow. Use 0-180° or 180-360° angle ranges (not custom ranges like 200-340°).
+- **Off-screen initialization**: CRITICAL - All arc/line widgets MUST be positioned off-screen at creation with `lv_obj_set_pos(widget, -100, -100)`. LVGL renders widgets at (0,0) by default before positioning, causing ghost artifacts. This applies to `mouth_arc`, `cat_arc_top`, `cat_arc_bottom`, and `whisker_lines`.
+- **Partial refresh**: LVGL dirty rectangles cause ghost artifacts on widget movement
+- **Transform rotation**: `lv_obj_set_style_transform_rotation` causes display corruption - use `lv_line` instead
