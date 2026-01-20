@@ -38,8 +38,7 @@
 #define DISPLAY_WIDTH  502
 #define DISPLAY_HEIGHT 410
 
-/* Shake/dizzy duration */
-#define DIZZY_DURATION_MS  3000
+/* Dizzy duration is managed by face_renderer (3 seconds) */
 
 /* Default server */
 #define DEFAULT_HOST "localhost"
@@ -77,9 +76,7 @@ static int g_demo_timer_seconds = 10;  /* Countdown for timer demo */
 /* LVGL tick timer (called from main loop) */
 static uint32_t g_last_tick = 0;
 
-/* Dizzy state (from shake) */
-static bool g_dizzy_active = false;
-static uint32_t g_dizzy_start_time = 0;
+/* Dizzy is managed by face_renderer - we just trigger it */
 
 /**
  * Get current time in milliseconds
@@ -120,11 +117,7 @@ static void shake_callback(float intensity)
 
     printf("Shake callback: intensity=%.2f\n", intensity);
 
-    /* Set dizzy state */
-    g_dizzy_active = true;
-    g_dizzy_start_time = get_time_ms();
-
-    /* Tell face renderer to go dizzy */
+    /* Tell face renderer to go dizzy (it handles its own timeout) */
     face_renderer_set_dizzy(true);
 }
 
@@ -696,9 +689,7 @@ static void keyboard_handler(int key)
             if (face_renderer_get_mode() != DISPLAY_MODE_FACE) {
                 face_renderer_clear_display();
             }
-            /* Now trigger dizzy directly */
-            g_dizzy_active = true;
-            g_dizzy_start_time = get_time_ms();
+            /* Trigger dizzy (face_renderer handles its own 3-second timeout) */
             face_renderer_set_dizzy(true);
             printf("Manual: Dizzy! (move window rapidly back and forth to trigger naturally)\n");
             break;
@@ -887,16 +878,7 @@ int main(int argc, char* argv[])
         /* Update demo mode (when not connected) */
         update_demo_mode();
 
-        /* Check dizzy timeout */
-        if (g_dizzy_active) {
-            if (now - g_dizzy_start_time >= DIZZY_DURATION_MS) {
-                g_dizzy_active = false;
-                face_renderer_set_dizzy(false);
-                printf("Dizzy effect ended\n");
-            }
-        }
-
-        /* Tick face renderer (updates animation, widgets) */
+        /* Tick face renderer (updates animation, widgets, dizzy timeout) */
         face_renderer_tick(delta_ms);
 
         /* Run LVGL tasks */

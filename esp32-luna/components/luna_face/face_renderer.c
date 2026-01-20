@@ -929,7 +929,7 @@ static void update_animation(float delta_time)
     s_renderer.right_wink = lerp(s_renderer.right_wink, s_renderer.target_right_wink, delta_time * WINK_SPEED);
 
     // Update dizzy wobble effect
-    #define DIZZY_DURATION_MS 3000   // How long dizzy lasts
+    #define DIZZY_DURATION_MS 1500   // How long dizzy lasts (1.5 seconds)
     #define DIZZY_WOBBLE_SPEED 8.0f  // Wobble frequency
 
     if (s_renderer.is_dizzy) {
