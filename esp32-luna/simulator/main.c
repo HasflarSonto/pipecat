@@ -38,6 +38,9 @@
 #define DISPLAY_WIDTH  502
 #define DISPLAY_HEIGHT 410
 
+/* Shake/dizzy duration */
+#define DIZZY_DURATION_MS  3000
+
 /* Default server */
 #define DEFAULT_HOST "localhost"
 #define DEFAULT_PORT 7860
@@ -74,6 +77,10 @@ static int g_demo_timer_seconds = 10;  /* Countdown for timer demo */
 /* LVGL tick timer (called from main loop) */
 static uint32_t g_last_tick = 0;
 
+/* Dizzy state (from shake) */
+static bool g_dizzy_active = false;
+static uint32_t g_dizzy_start_time = 0;
+
 /**
  * Get current time in milliseconds
  */
@@ -99,14 +106,48 @@ static void update_lvgl_tick(void)
 }
 
 /**
- * Handle touch for petting interaction
+ * Handle shake detection callback
+ * Called when window is moved rapidly back and forth
+ */
+static void shake_callback(float intensity)
+{
+    printf("Shake callback: intensity=%.2f\n", intensity);
+
+    /* Set dizzy state */
+    g_dizzy_active = true;
+    g_dizzy_start_time = get_time_ms();
+
+    /* Tell face renderer to go dizzy */
+    face_renderer_set_dizzy(true);
+}
+
+/**
+ * Handle eye poke detection
+ * Called when an eye is clicked
+ */
+static void eye_poke_callback(int which_eye)
+{
+    printf("Eye poke: %s eye\n", which_eye == 0 ? "left" : "right");
+    face_renderer_poke_eye(which_eye);
+}
+
+/**
+ * Handle touch for petting interaction and eye poke
  */
 static void touch_callback(bool pressed, int x, int y)
 {
+    /* Check for eye poke on click */
+    if (pressed) {
+        int eye = face_renderer_hit_test_eye(x, y);
+        if (eye >= 0) {
+            eye_poke_callback(eye);
+            return;  /* Don't treat as petting if it's an eye poke */
+        }
+    }
+
     /* Forward touch to face renderer for petting detection */
     /* The face renderer reads touch state via bsp_display_lock/mutex */
     /* For now, we'll handle petting directly here if needed */
-    (void)pressed;
     (void)x;
     (void)y;
 }
@@ -551,8 +592,32 @@ static void keyboard_handler(int key)
         /* T = Timer mode */
         case SDLK_t:
             g_demo_mode = false;
-            face_renderer_show_timer(25, 0, "Focus", true);
-            printf("Manual: Timer mode -> 25:00\n");
+            face_renderer_show_timer(25, 0, "Focus", false);
+            printf("Manual: Timer mode -> 25:00 (press S to start)\n");
+            break;
+
+        /* S = Start timer */
+        case SDLK_s:
+            if (face_renderer_get_mode() == DISPLAY_MODE_TIMER) {
+                face_renderer_timer_start();
+                printf("Manual: Timer started\n");
+            }
+            break;
+
+        /* P = Pause timer */
+        case SDLK_p:
+            if (face_renderer_get_mode() == DISPLAY_MODE_TIMER) {
+                face_renderer_timer_pause();
+                printf("Manual: Timer paused\n");
+            }
+            break;
+
+        /* R = Reset timer */
+        case SDLK_r:
+            if (face_renderer_get_mode() == DISPLAY_MODE_TIMER) {
+                face_renderer_timer_reset(25);
+                printf("Manual: Timer reset to 25:00\n");
+            }
             break;
 
         /* A = Animation mode (cycle with arrows) */
@@ -607,6 +672,14 @@ static void keyboard_handler(int key)
             printf("Manual: Blink!\n");
             break;
 
+        /* D = Trigger dizzy effect */
+        case SDLK_d:
+            g_demo_mode = false;
+            face_renderer_clear_display();
+            shake_callback(0.8f);  /* Simulate shake */
+            printf("Manual: Dizzy! (move window rapidly back and forth to trigger naturally)\n");
+            break;
+
         /* H = Help */
         case SDLK_h:
             printf("\n=== Keyboard Controls ===\n");
@@ -614,12 +687,19 @@ static void keyboard_handler(int key)
             printf("F      : Face mode\n");
             printf("C      : Clock mode\n");
             printf("W      : Weather mode\n");
-            printf("T      : Timer mode\n");
+            printf("T      : Timer mode (25 min pomodoro)\n");
+            printf("  S    : Start timer\n");
+            printf("  P    : Pause timer\n");
+            printf("  R    : Reset timer to 25:00\n");
             printf("A      : Animation mode\n");
             printf("B      : Force blink\n");
+            printf("D      : Trigger dizzy effect (or move window rapidly)\n");
             printf("SPACE  : Toggle demo mode\n");
             printf("LEFT/RIGHT : Cycle through current mode\n");
             printf("ESC    : Quit\n");
+            printf("\n=== Mouse Controls ===\n");
+            printf("Click on eye : Poke that eye (makes it wink)\n");
+            printf("Drag up/down : Pet the face\n");
             printf("=========================\n\n");
             break;
 
@@ -652,7 +732,10 @@ static void print_usage(const char* prog)
     printf("  F          : Face mode\n");
     printf("  C          : Clock mode (real time)\n");
     printf("  W          : Weather mode\n");
-    printf("  T          : Timer mode\n");
+    printf("  T          : Timer mode (25 min pomodoro)\n");
+    printf("    S        : Start timer\n");
+    printf("    P        : Pause timer\n");
+    printf("    R        : Reset timer\n");
     printf("  A          : Animation mode\n");
     printf("  B          : Force blink\n");
     printf("  SPACE      : Toggle demo mode on/off\n");
@@ -709,6 +792,10 @@ int main(int argc, char* argv[])
     }
     sdl_mouse_set_callback(touch_callback);
     sdl_display_set_keyboard_callback(keyboard_handler);
+
+    /* Set up shake detection callback */
+    sdl_display_set_shake_callback(shake_callback);
+    sdl_display_enable_shake_detection(true);
 
     /* Initialize audio */
     if (!sdl_audio_init()) {
@@ -775,6 +862,15 @@ int main(int argc, char* argv[])
 
         /* Update demo mode (when not connected) */
         update_demo_mode();
+
+        /* Check dizzy timeout */
+        if (g_dizzy_active) {
+            if (now - g_dizzy_start_time >= DIZZY_DURATION_MS) {
+                g_dizzy_active = false;
+                face_renderer_set_dizzy(false);
+                printf("Dizzy effect ended\n");
+            }
+        }
 
         /* Tick face renderer (updates animation, widgets) */
         face_renderer_tick(delta_ms);

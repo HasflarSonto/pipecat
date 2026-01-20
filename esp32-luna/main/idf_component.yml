@@ -19,3 +19,7 @@ dependencies:
   # ESP LVGL Port
   espressif/esp_lvgl_port:
     version: "*"
+
+  # QMI8658 IMU/Gyro sensor (for shake detection)
+  waveshare/qmi8658:
+    version: "*"

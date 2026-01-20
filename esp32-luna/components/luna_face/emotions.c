@@ -9,6 +9,21 @@
 
 // Emotion configurations from Python luna_face_renderer.py
 static const emotion_config_t s_emotions[EMOTION_COUNT] = {
+    // EMOTION_EYES_ONLY (default - just eyes, no mouth)
+    {
+        .eye_height = 60.0f,
+        .eye_width = 40.0f,
+        .eye_openness = 1.0f,
+        .mouth_curve = 0.0f,
+        .mouth_open = 0.0f,
+        .mouth_width = 0.0f,
+        .angry_brows = false,
+        .look_side = false,
+        .tilt_eyes = false,
+        .sparkle = false,
+        .cat_face = false,
+        .no_mouth = true,
+    },
     // EMOTION_NEUTRAL
     {
         .eye_height = 60.0f,
@@ -22,6 +37,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_HAPPY
     {
@@ -36,6 +52,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_SAD
     {
@@ -50,6 +67,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_ANGRY
     {
@@ -64,6 +82,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_SURPRISED
     {
@@ -78,6 +97,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_THINKING
     {
@@ -92,6 +112,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_CONFUSED
     {
@@ -106,6 +127,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = true,
         .sparkle = false,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_EXCITED
     {
@@ -120,6 +142,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = true,
         .cat_face = false,
+        .no_mouth = false,
     },
     // EMOTION_CAT
     {
@@ -134,10 +157,27 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .tilt_eyes = false,
         .sparkle = false,
         .cat_face = true,
+        .no_mouth = false,
+    },
+    // EMOTION_DIZZY (from being shaken) - wide wobbly eyes, confused mouth
+    {
+        .eye_height = 65.0f,
+        .eye_width = 45.0f,
+        .eye_openness = 1.1f,
+        .mouth_curve = -0.2f,   // Slight frown/confused
+        .mouth_open = 0.3f,     // Slightly open "woozy" mouth
+        .mouth_width = 40.0f,
+        .angry_brows = false,
+        .look_side = false,
+        .tilt_eyes = true,      // Eyes at different heights (disoriented)
+        .sparkle = false,
+        .cat_face = false,
+        .no_mouth = false,
     },
 };
 
 static const char *s_emotion_names[EMOTION_COUNT] = {
+    "eyes_only",
     "neutral",
     "happy",
     "sad",
@@ -147,12 +187,13 @@ static const char *s_emotion_names[EMOTION_COUNT] = {
     "confused",
     "excited",
     "cat",
+    "dizzy",
 };
 
 const emotion_config_t* emotion_get_config(emotion_id_t id)
 {
     if (id < 0 || id >= EMOTION_COUNT) {
-        return &s_emotions[EMOTION_NEUTRAL];
+        return &s_emotions[EMOTION_EYES_ONLY];
     }
     return &s_emotions[id];
 }
@@ -160,7 +201,7 @@ const emotion_config_t* emotion_get_config(emotion_id_t id)
 emotion_id_t emotion_from_string(const char *name)
 {
     if (name == NULL) {
-        return EMOTION_NEUTRAL;
+        return EMOTION_EYES_ONLY;
     }
 
     for (int i = 0; i < EMOTION_COUNT; i++) {
@@ -169,13 +210,13 @@ emotion_id_t emotion_from_string(const char *name)
         }
     }
 
-    return EMOTION_NEUTRAL;
+    return EMOTION_EYES_ONLY;
 }
 
 const char* emotion_to_string(emotion_id_t id)
 {
     if (id < 0 || id >= EMOTION_COUNT) {
-        return s_emotion_names[EMOTION_NEUTRAL];
+        return s_emotion_names[EMOTION_EYES_ONLY];
     }
     return s_emotion_names[id];
 }
@@ -213,4 +254,5 @@ void emotion_interpolate(const emotion_config_t *from,
     result->tilt_eyes = use_target ? to->tilt_eyes : from->tilt_eyes;
     result->sparkle = use_target ? to->sparkle : from->sparkle;
     result->cat_face = use_target ? to->cat_face : from->cat_face;
+    result->no_mouth = use_target ? to->no_mouth : from->no_mouth;
 }

@@ -32,6 +32,18 @@ static void* s_buf2 = NULL;
 /* Keyboard callback */
 static sdl_keyboard_callback_t s_keyboard_callback = NULL;
 
+/* Shake detection state */
+static sdl_shake_callback_t s_shake_callback = NULL;
+static bool s_shake_detection_enabled = false;
+static int s_window_positions[10];  /* Ring buffer of window X positions */
+static int s_window_pos_index = 0;
+static int s_direction_changes = 0;
+static int s_last_direction = 0;  /* -1 = left, 0 = none, 1 = right */
+static uint32_t s_last_shake_time = 0;
+
+/* Eye poke callback */
+static sdl_eye_poke_callback_t s_eye_poke_callback = NULL;
+
 /**
  * LVGL flush callback - renders to SDL texture
  * Using PARTIAL render mode for better performance
@@ -220,6 +232,69 @@ bool sdl_display_quit_requested(void)
     return s_quit_requested;
 }
 
+/**
+ * Process window movement for shake detection
+ * Detects rapid back-and-forth window movement
+ */
+static void process_window_movement(int new_x)
+{
+    if (!s_shake_detection_enabled || !s_shake_callback) {
+        return;
+    }
+
+    /* Get current time */
+    uint32_t now = SDL_GetTicks();
+
+    /* Cooldown after shake detected (2 seconds) */
+    if (now - s_last_shake_time < 2000) {
+        return;
+    }
+
+    /* Get previous position */
+    int prev_index = (s_window_pos_index + 9) % 10;
+    int prev_x = s_window_positions[prev_index];
+
+    /* Store new position */
+    s_window_positions[s_window_pos_index] = new_x;
+    s_window_pos_index = (s_window_pos_index + 1) % 10;
+
+    /* Calculate movement delta */
+    int delta = new_x - prev_x;
+
+    /* Ignore small movements (need at least 30 pixels) */
+    if (abs(delta) < 30) {
+        return;
+    }
+
+    /* Determine direction */
+    int direction = (delta > 0) ? 1 : -1;
+
+    /* Check for direction change */
+    if (s_last_direction != 0 && direction != s_last_direction) {
+        s_direction_changes++;
+
+        /* Detect shake: 3+ direction changes in rapid succession */
+        if (s_direction_changes >= 3) {
+            /* Calculate intensity based on movement speed */
+            float intensity = (float)abs(delta) / 100.0f;
+            if (intensity > 1.0f) intensity = 1.0f;
+            if (intensity < 0.3f) intensity = 0.3f;
+
+            printf("SHAKE detected! intensity=%.2f (direction changes=%d)\n",
+                   intensity, s_direction_changes);
+
+            /* Call callback */
+            s_shake_callback(intensity);
+
+            /* Reset and set cooldown */
+            s_direction_changes = 0;
+            s_last_shake_time = now;
+        }
+    }
+
+    s_last_direction = direction;
+}
+
 void sdl_display_poll_events(void)
 {
     SDL_Event event;
@@ -227,6 +302,13 @@ void sdl_display_poll_events(void)
         switch (event.type) {
             case SDL_QUIT:
                 s_quit_requested = true;
+                break;
+
+            case SDL_WINDOWEVENT:
+                /* Handle window movement for shake detection */
+                if (event.window.event == SDL_WINDOWEVENT_MOVED) {
+                    process_window_movement(event.window.data1);
+                }
                 break;
 
             case SDL_MOUSEBUTTONDOWN:
@@ -256,4 +338,34 @@ void sdl_display_poll_events(void)
 void sdl_display_set_keyboard_callback(sdl_keyboard_callback_t callback)
 {
     s_keyboard_callback = callback;
+}
+
+void sdl_display_set_shake_callback(sdl_shake_callback_t callback)
+{
+    s_shake_callback = callback;
+}
+
+void sdl_display_set_eye_poke_callback(sdl_eye_poke_callback_t callback)
+{
+    s_eye_poke_callback = callback;
+}
+
+void sdl_display_enable_shake_detection(bool enabled)
+{
+    s_shake_detection_enabled = enabled;
+    if (enabled) {
+        /* Reset shake detection state */
+        s_direction_changes = 0;
+        s_last_direction = 0;
+        s_window_pos_index = 0;
+        for (int i = 0; i < 10; i++) {
+            s_window_positions[i] = 0;
+        }
+        printf("Shake detection enabled - move window rapidly back and forth to trigger dizzy\n");
+    }
+}
+
+sdl_eye_poke_callback_t sdl_display_get_eye_poke_callback(void)
+{
+    return s_eye_poke_callback;
 }

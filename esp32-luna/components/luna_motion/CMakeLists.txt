@@ -1,0 +1,12 @@
+idf_component_register(
+    SRCS
+        "luna_motion.c"
+    INCLUDE_DIRS
+        "."
+    REQUIRES
+        esp32_s3_touch_amoled_2_06
+        freertos
+        log
+        esp_timer
+        qmi8658
+)

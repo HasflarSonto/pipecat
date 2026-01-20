@@ -28,13 +28,15 @@ typedef struct {
     bool tilt_eyes;        // One eye higher than other (confused)
     bool sparkle;          // Sparkle effect (excited)
     bool cat_face;         // Cat-style mouth (":3" shape)
+    bool no_mouth;         // Eyes only, no mouth displayed
 } emotion_config_t;
 
 /**
  * @brief Emotion identifiers
  */
 typedef enum {
-    EMOTION_NEUTRAL = 0,
+    EMOTION_EYES_ONLY = 0,  // Default: just eyes, no mouth
+    EMOTION_NEUTRAL,
     EMOTION_HAPPY,
     EMOTION_SAD,
     EMOTION_ANGRY,
@@ -43,6 +45,7 @@ typedef enum {
     EMOTION_CONFUSED,
     EMOTION_EXCITED,
     EMOTION_CAT,
+    EMOTION_DIZZY,          // Dizzy from being shaken - spiral eyes
     EMOTION_COUNT
 } emotion_id_t;
 

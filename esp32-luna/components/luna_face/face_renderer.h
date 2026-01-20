@@ -198,6 +198,28 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
                                bool is_running);
 
 /**
+ * @brief Start the timer countdown
+ */
+void face_renderer_timer_start(void);
+
+/**
+ * @brief Pause the timer countdown
+ */
+void face_renderer_timer_pause(void);
+
+/**
+ * @brief Reset the timer to specified minutes
+ * @param minutes Number of minutes to set
+ */
+void face_renderer_timer_reset(int minutes);
+
+/**
+ * @brief Check if timer is running
+ * @return true if timer is counting down
+ */
+bool face_renderer_timer_is_running(void);
+
+/**
  * @brief Show clock display
  * @param hours Hour (0-23)
  * @param minutes Minute (0-59)
@@ -227,6 +249,48 @@ display_mode_t face_renderer_get_mode(void);
  * @return Actual frames per second
  */
 float face_renderer_get_fps(void);
+
+/**
+ * @brief Manual tick for simulator (call from main loop instead of using render task)
+ * @param delta_time_ms Time since last tick in milliseconds
+ *
+ * In the simulator, LVGL is not thread-safe so we can't use a background render task.
+ * Instead, call this function from the main loop after lv_timer_handler().
+ */
+void face_renderer_tick(uint32_t delta_time_ms);
+
+/**
+ * @brief Set eye wink state (for eye poke interaction)
+ * @param left_wink Left eye wink amount (0.0 = open, 1.0 = fully closed)
+ * @param right_wink Right eye wink amount (0.0 = open, 1.0 = fully closed)
+ */
+void face_renderer_set_wink(float left_wink, float right_wink);
+
+/**
+ * @brief Poke an eye (causes that eye to close briefly)
+ * @param which_eye 0 = left eye, 1 = right eye
+ */
+void face_renderer_poke_eye(int which_eye);
+
+/**
+ * @brief Check if a point is within an eye region
+ * @param x X coordinate (screen space)
+ * @param y Y coordinate (screen space)
+ * @return -1 if not on eye, 0 if on left eye, 1 if on right eye
+ */
+int face_renderer_hit_test_eye(int x, int y);
+
+/**
+ * @brief Set dizzy state (from shake)
+ * @param dizzy true to enable dizzy mode
+ */
+void face_renderer_set_dizzy(bool dizzy);
+
+/**
+ * @brief Check if currently dizzy
+ * @return true if dizzy
+ */
+bool face_renderer_is_dizzy(void);
 
 #ifdef __cplusplus
 }

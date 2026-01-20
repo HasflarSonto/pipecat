@@ -22,6 +22,11 @@
 #include <math.h>
 #include <stdlib.h>
 
+// Custom 64pt font for large text displays (clock, weather)
+#ifdef SIMULATOR
+extern const lv_font_t lv_font_montserrat_64;
+#endif
+
 static const char *TAG = "face_renderer";
 
 // Display configuration - LANDSCAPE after 90° rotation
@@ -29,9 +34,30 @@ static const char *TAG = "face_renderer";
 #define DEFAULT_WIDTH       502
 #define DEFAULT_HEIGHT      410
 
-// Colors
-#define BG_COLOR            0x1E1E28    // Dark background
-#define FACE_COLOR          0xFFFFFF    // White for features
+// Colors - New palette
+#define BG_COLOR            0x000000    // Pure black background
+#define FACE_COLOR          0xFFFFFF    // Pure white for eyes/face features
+
+// Color palette
+#define COLOR_SAND          0xE4CBA9    // Sand - warm neutral
+#define COLOR_SKYBLUE       0x7FC7CC    // Sky blue - calm, cool
+#define COLOR_DEEPSEA       0x092F33    // Deep sea - dark accent
+#define COLOR_MOSS          0x4B5B34    // Moss green - nature, focus/timer
+#define COLOR_TERRACOTTA    0xAF5031    // Terracotta - warm warning
+#define COLOR_CHERRY        0xFDABA5    // Cherry blossom - soft pink
+#define COLOR_REDWINE       0x980204    // Red wine - urgent/error
+#define COLOR_SUNSHINE      0xEA8913    // Sunshine - warm yellow/orange
+
+// Standardized UI Style
+#define STYLE_TAG_COLOR     COLOR_SAND      // Sand for top-left screen tags
+#define STYLE_TAG_POS_X     20              // Top-left tag X position
+#define STYLE_TAG_POS_Y     15              // Top-left tag Y position
+#define STYLE_PRIMARY_TEXT  0xFFFFFF        // Pure white for primary content
+#define STYLE_SECONDARY_TEXT COLOR_SAND     // Sand for secondary info
+#define STYLE_ACCENT_COLOR  COLOR_SUNSHINE  // Sunshine for weather sun icon
+#define STYLE_BUTTON_ACTIVE COLOR_MOSS      // Moss green for timer/active buttons
+#define STYLE_BUTTON_WARN   COLOR_TERRACOTTA // Terracotta for warning/pause
+#define STYLE_BUTTON_INACTIVE COLOR_DEEPSEA // Deep sea for inactive buttons
 
 // Animation timing - VERY SLOW to avoid SPI overflow
 #define ANIMATION_PERIOD_MS    200      // ~5 FPS to reduce SPI load
@@ -147,6 +173,20 @@ static struct {
     // Cat mode
     bool cat_mode;
 
+    // Wink state (eye poke)
+    float left_wink;          // 0.0 = open, 1.0 = closed
+    float right_wink;
+    float target_left_wink;
+    float target_right_wink;
+    int64_t left_poke_time;   // Time when poked
+    int64_t right_poke_time;
+
+    // Dizzy state (shake detection)
+    bool is_dizzy;
+    int64_t dizzy_start_time;
+    float dizzy_wobble;       // Current wobble phase
+    emotion_id_t pre_dizzy_emotion;  // Emotion to restore after dizzy
+
     // Text mode
     char text_content[MAX_TEXT_LENGTH];
     font_size_t text_size;
@@ -188,6 +228,8 @@ static void update_animation(float delta_time);
 static void update_petting(float delta_time);
 static void update_face_widgets(void);
 static float get_blink_factor(void);
+static void timer_btn_start_click_cb(lv_event_t *e);
+static void timer_btn_pause_click_cb(lv_event_t *e);
 
 static float lerp(float a, float b, float t)
 {
@@ -349,12 +391,25 @@ static void update_face_widgets(void)
     // Calculate blink factor
     float blink_factor = get_blink_factor();
 
-    // Calculate eye dimensions (height increased 40% for better visibility)
-    float eye_height = params->eye_height * SCALE_Y * 1.4f;
+    // Calculate base eye dimensions (height increased 40% for better visibility)
+    float base_eye_height = params->eye_height * SCALE_Y * 1.4f;
     float eye_width = params->eye_width * SCALE_X;
-    eye_height *= params->eye_openness;
-    eye_height *= (1.0f - blink_factor * 0.95f);
-    if (eye_height < 5) eye_height = 5;
+    base_eye_height *= params->eye_openness;
+    base_eye_height *= (1.0f - blink_factor * 0.95f);
+
+    // Apply independent wink factors to each eye
+    float left_eye_height = base_eye_height * (1.0f - s_renderer.left_wink * 0.95f);
+    float right_eye_height = base_eye_height * (1.0f - s_renderer.right_wink * 0.95f);
+
+    // Apply dizzy wobble effect (eyes at different heights)
+    if (s_renderer.is_dizzy) {
+        float wobble = sinf(s_renderer.dizzy_wobble) * 10.0f * SCALE_Y;
+        left_eye_height += wobble;
+        right_eye_height -= wobble;  // Opposite wobble for dizzy effect
+    }
+
+    if (left_eye_height < 5) left_eye_height = 5;
+    if (right_eye_height < 5) right_eye_height = 5;
 
     // Gaze offset
     float gaze_range_x = 28.0f * SCALE_X;
@@ -369,45 +424,57 @@ static void update_face_widgets(void)
     // Think offset (look to side)
     int think_offset = params->look_side ? (int)(12.0f * SCALE_X) : 0;
 
-    // Tilt for confused
+    // Tilt for confused/dizzy
     int left_tilt = params->tilt_eyes ? (int)(-8.0f * SCALE_Y) : 0;
     int right_tilt = params->tilt_eyes ? (int)(8.0f * SCALE_Y) : 0;
 
-    int eye_w = (int)eye_width;
-    int eye_h = (int)eye_height;
+    // Add extra tilt during dizzy wobble
+    if (s_renderer.is_dizzy) {
+        float tilt_wobble = cosf(s_renderer.dizzy_wobble * 1.5f) * 5.0f * SCALE_Y;
+        left_tilt += (int)tilt_wobble;
+        right_tilt -= (int)tilt_wobble;
+    }
 
-    // Calculate corner radius
-    int radius = (eye_h < eye_w) ? eye_h / 2 : eye_w / 2;
+    int eye_w = (int)eye_width;
+    int left_eye_h = (int)left_eye_height;
+    int right_eye_h = (int)right_eye_height;
+
+    // Calculate corner radius (use smaller height for radius)
+    int left_radius = (left_eye_h < eye_w) ? left_eye_h / 2 : eye_w / 2;
+    int right_radius = (right_eye_h < eye_w) ? right_eye_h / 2 : eye_w / 2;
     int max_radius = (int)(15.0f * SCALE_Y);
-    if (radius > max_radius) radius = max_radius;
+    if (left_radius > max_radius) left_radius = max_radius;
+    if (right_radius > max_radius) right_radius = max_radius;
 
     // Calculate eye positions
     int left_eye_x = s_renderer.left_eye_base_x + offset_x + gaze_x_offset + think_offset - eye_w/2;
-    int left_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + left_tilt - eye_h/2;
+    int left_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + left_tilt - left_eye_h/2;
     int right_eye_x = s_renderer.right_eye_base_x + offset_x + gaze_x_offset + think_offset - eye_w/2;
-    int right_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + right_tilt - eye_h/2;
+    int right_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + right_tilt - right_eye_h/2;
 
-    // Check if significant change
+    // Check if significant change (now we need to track both eyes' heights)
     bool eye_changed = (abs(left_eye_x - s_renderer.last_eye_x) > MIN_EYE_CHANGE ||
                         abs(left_eye_y - s_renderer.last_eye_y) > MIN_EYE_CHANGE ||
                         abs(eye_w - s_renderer.last_eye_w) > MIN_EYE_CHANGE ||
-                        abs(eye_h - s_renderer.last_eye_h) > MIN_EYE_CHANGE);
+                        abs(left_eye_h - s_renderer.last_eye_h) > MIN_EYE_CHANGE ||
+                        s_renderer.left_wink > 0.01f || s_renderer.right_wink > 0.01f ||
+                        s_renderer.is_dizzy);
 
     if (eye_changed) {
         // Update left eye (no invalidate - let LVGL handle dirty rects)
         lv_obj_set_pos(s_renderer.left_eye, left_eye_x, left_eye_y);
-        lv_obj_set_size(s_renderer.left_eye, eye_w, eye_h);
-        lv_obj_set_style_radius(s_renderer.left_eye, radius, 0);
+        lv_obj_set_size(s_renderer.left_eye, eye_w, left_eye_h);
+        lv_obj_set_style_radius(s_renderer.left_eye, left_radius, 0);
 
-        // Update right eye
+        // Update right eye (may have different height due to wink)
         lv_obj_set_pos(s_renderer.right_eye, right_eye_x, right_eye_y);
-        lv_obj_set_size(s_renderer.right_eye, eye_w, eye_h);
-        lv_obj_set_style_radius(s_renderer.right_eye, radius, 0);
+        lv_obj_set_size(s_renderer.right_eye, eye_w, right_eye_h);
+        lv_obj_set_style_radius(s_renderer.right_eye, right_radius, 0);
 
         s_renderer.last_eye_x = left_eye_x;
         s_renderer.last_eye_y = left_eye_y;
         s_renderer.last_eye_w = eye_w;
-        s_renderer.last_eye_h = eye_h;
+        s_renderer.last_eye_h = left_eye_h;
     }
 
     // Sparkles disabled - they looked scary (like pupils)
@@ -430,7 +497,9 @@ static void update_face_widgets(void)
 
     // Calculate mouth curve category
     int curve_category;
-    if (params->cat_face) {
+    if (params->no_mouth) {
+        curve_category = -100;  // No mouth (eyes only)
+    } else if (params->cat_face) {
         curve_category = 100;  // Cat mode
     } else if (params->mouth_open > 0.3f) {
         curve_category = 50;   // O mouth
@@ -461,7 +530,11 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
-        if (curve_category == 100) {
+        if (curve_category == -100) {
+            // Eyes only - no mouth, hide the background too
+            lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Eyes only mode - mouth hidden");
+        } else if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
             // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise
 
@@ -764,6 +837,51 @@ static void update_animation(float delta_time)
             s_renderer.blink_progress = 0.0f;
         }
     }
+
+    // Update wink state (eye poke)
+    #define WINK_SPEED 10.0f      // How fast wink opens/closes
+    #define WINK_DECAY_MS 400     // How long eye stays closed after poke
+
+    // Left eye wink
+    if (s_renderer.left_poke_time > 0) {
+        int64_t elapsed = current_time - s_renderer.left_poke_time;
+        if (elapsed > WINK_DECAY_MS) {
+            // Start opening
+            s_renderer.target_left_wink = 0.0f;
+            if (s_renderer.left_wink < 0.05f) {
+                s_renderer.left_poke_time = 0;
+            }
+        }
+    }
+    s_renderer.left_wink = lerp(s_renderer.left_wink, s_renderer.target_left_wink, delta_time * WINK_SPEED);
+
+    // Right eye wink
+    if (s_renderer.right_poke_time > 0) {
+        int64_t elapsed = current_time - s_renderer.right_poke_time;
+        if (elapsed > WINK_DECAY_MS) {
+            // Start opening
+            s_renderer.target_right_wink = 0.0f;
+            if (s_renderer.right_wink < 0.05f) {
+                s_renderer.right_poke_time = 0;
+            }
+        }
+    }
+    s_renderer.right_wink = lerp(s_renderer.right_wink, s_renderer.target_right_wink, delta_time * WINK_SPEED);
+
+    // Update dizzy wobble effect
+    #define DIZZY_DURATION_MS 3000   // How long dizzy lasts
+    #define DIZZY_WOBBLE_SPEED 8.0f  // Wobble frequency
+
+    if (s_renderer.is_dizzy) {
+        int64_t elapsed = current_time - s_renderer.dizzy_start_time;
+        if (elapsed > DIZZY_DURATION_MS) {
+            // Auto-recover from dizzy after duration
+            face_renderer_set_dizzy(false);
+        } else {
+            // Update wobble phase
+            s_renderer.dizzy_wobble += delta_time * DIZZY_WOBBLE_SPEED;
+        }
+    }
 }
 
 // Update petting state based on touch input
@@ -951,10 +1069,10 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
 
     // Initialize state
     s_renderer.mode = DISPLAY_MODE_FACE;
-    s_renderer.current_emotion = EMOTION_NEUTRAL;
-    s_renderer.target_emotion = EMOTION_NEUTRAL;
+    s_renderer.current_emotion = EMOTION_EYES_ONLY;
+    s_renderer.target_emotion = EMOTION_EYES_ONLY;
     s_renderer.emotion_transition = 1.0f;
-    s_renderer.current_params = *emotion_get_config(EMOTION_NEUTRAL);
+    s_renderer.current_params = *emotion_get_config(EMOTION_EYES_ONLY);
 
     s_renderer.gaze_x = 0.5f;
     s_renderer.gaze_y = 0.5f;
@@ -1138,6 +1256,114 @@ void face_renderer_blink(void)
         s_renderer.blink_progress = 0.0f;
         xSemaphoreGive(s_renderer.mutex);
     }
+}
+
+void face_renderer_set_wink(float left_wink, float right_wink)
+{
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        s_renderer.target_left_wink = left_wink < 0.0f ? 0.0f : (left_wink > 1.0f ? 1.0f : left_wink);
+        s_renderer.target_right_wink = right_wink < 0.0f ? 0.0f : (right_wink > 1.0f ? 1.0f : right_wink);
+        xSemaphoreGive(s_renderer.mutex);
+    }
+}
+
+void face_renderer_poke_eye(int which_eye)
+{
+    if (!s_renderer.initialized) {
+        return;
+    }
+
+    int64_t now = esp_timer_get_time() / 1000;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (which_eye == 0) {
+            // Left eye poke
+            s_renderer.target_left_wink = 1.0f;
+            s_renderer.left_poke_time = now;
+            ESP_LOGI(TAG, "Left eye poked!");
+        } else if (which_eye == 1) {
+            // Right eye poke
+            s_renderer.target_right_wink = 1.0f;
+            s_renderer.right_poke_time = now;
+            ESP_LOGI(TAG, "Right eye poked!");
+        }
+        xSemaphoreGive(s_renderer.mutex);
+    }
+}
+
+int face_renderer_hit_test_eye(int x, int y)
+{
+    if (!s_renderer.initialized || s_renderer.mode != DISPLAY_MODE_FACE) {
+        return -1;
+    }
+
+    // Get current eye positions (base + offsets)
+    int offset_x = (int)s_renderer.face_offset_x;
+    int offset_y = (int)(s_renderer.face_offset_y + s_renderer.pet_offset_y);
+
+    // Calculate eye dimensions
+    emotion_config_t *params = &s_renderer.current_params;
+    float eye_height = params->eye_height * SCALE_Y * 1.4f * params->eye_openness;
+    float eye_width = params->eye_width * SCALE_X;
+
+    int left_eye_cx = s_renderer.left_eye_base_x + offset_x;
+    int left_eye_cy = s_renderer.eye_base_y + offset_y;
+    int right_eye_cx = s_renderer.right_eye_base_x + offset_x;
+    int right_eye_cy = s_renderer.eye_base_y + offset_y;
+
+    // Hit test radius (slightly larger than eye for easier interaction)
+    int hit_radius_x = (int)(eye_width * 0.7f);
+    int hit_radius_y = (int)(eye_height * 0.7f);
+
+    // Check left eye
+    int dx = x - left_eye_cx;
+    int dy = y - left_eye_cy;
+    if (dx*dx / (float)(hit_radius_x * hit_radius_x) + dy*dy / (float)(hit_radius_y * hit_radius_y) <= 1.0f) {
+        return 0;  // Left eye
+    }
+
+    // Check right eye
+    dx = x - right_eye_cx;
+    dy = y - right_eye_cy;
+    if (dx*dx / (float)(hit_radius_x * hit_radius_x) + dy*dy / (float)(hit_radius_y * hit_radius_y) <= 1.0f) {
+        return 1;  // Right eye
+    }
+
+    return -1;  // Not on eye
+}
+
+void face_renderer_set_dizzy(bool dizzy)
+{
+    if (!s_renderer.initialized) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        if (dizzy && !s_renderer.is_dizzy) {
+            // Start dizzy state
+            s_renderer.is_dizzy = true;
+            s_renderer.dizzy_start_time = esp_timer_get_time() / 1000;
+            s_renderer.dizzy_wobble = 0.0f;
+            s_renderer.pre_dizzy_emotion = s_renderer.target_emotion;
+            s_renderer.target_emotion = EMOTION_DIZZY;
+            s_renderer.emotion_transition = 0.0f;
+            s_renderer.last_mouth_curve = -1000;  // Force redraw
+            ESP_LOGI(TAG, "Dizzy mode ON!");
+        } else if (!dizzy && s_renderer.is_dizzy) {
+            // End dizzy state
+            s_renderer.is_dizzy = false;
+            s_renderer.target_emotion = s_renderer.pre_dizzy_emotion;
+            s_renderer.emotion_transition = 0.0f;
+            s_renderer.last_mouth_curve = -1000;
+            ESP_LOGI(TAG, "Dizzy mode OFF, restoring %s", emotion_to_string(s_renderer.target_emotion));
+        }
+        xSemaphoreGive(s_renderer.mutex);
+    }
+}
+
+bool face_renderer_is_dizzy(void)
+{
+    return s_renderer.is_dizzy;
 }
 
 void face_renderer_show_text(const char *text, font_size_t size,
@@ -1339,6 +1565,223 @@ void face_renderer_clear_pixel_art(void)
 // New Display Screens (Weather, Timer, Clock, Animation)
 // ============================================================================
 
+// Weather icon drawing helpers - static widgets created once
+static lv_obj_t *s_weather_icon_objs[10] = {0};  // For sun rays, cloud shapes, etc.
+static int s_weather_icon_count = 0;
+
+// Animation particles
+#define MAX_PARTICLES 30
+static lv_obj_t *s_particles[MAX_PARTICLES] = {0};
+static float s_particle_x[MAX_PARTICLES];
+static float s_particle_y[MAX_PARTICLES];
+static float s_particle_speed[MAX_PARTICLES];
+static animation_type_t s_current_animation = ANIMATION_RAIN;
+static bool s_animation_active = false;
+
+// Timer widgets and state
+static lv_obj_t *s_timer_arc = NULL;
+static lv_obj_t *s_timer_label_small = NULL;  // "Focus" label in top-left
+static lv_obj_t *s_timer_btn_start = NULL;
+static lv_obj_t *s_timer_btn_pause = NULL;
+static lv_obj_t *s_timer_btn_label_start = NULL;
+static lv_obj_t *s_timer_btn_label_pause = NULL;
+
+// Timer state (for functional countdown)
+static int s_timer_minutes = 25;
+static int s_timer_seconds = 0;
+static int s_timer_total_seconds_start = 25 * 60;  // Total at start
+static bool s_timer_running = false;
+static int64_t s_timer_last_tick = 0;
+
+// Clock AM/PM label
+static lv_obj_t *s_clock_ampm_label = NULL;
+
+// Shared screen tag label (used for "Weather", "Clock", etc. in top-left)
+static lv_obj_t *s_screen_tag_label = NULL;
+
+// Show screen tag in top-left corner (standardized position and style)
+static void show_screen_tag(const char *tag_text)
+{
+    lv_obj_t *scr = lv_scr_act();
+    if (!s_screen_tag_label) {
+        s_screen_tag_label = lv_label_create(scr);
+    }
+    lv_obj_clear_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_screen_tag_label, tag_text);
+    lv_obj_set_style_text_color(s_screen_tag_label, lv_color_hex(STYLE_TAG_COLOR), 0);
+    lv_obj_set_style_text_font(s_screen_tag_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_pos(s_screen_tag_label, STYLE_TAG_POS_X, STYLE_TAG_POS_Y);
+}
+
+// Clear weather icon objects
+static void clear_weather_icons(void)
+{
+    for (int i = 0; i < s_weather_icon_count; i++) {
+        if (s_weather_icon_objs[i]) {
+            lv_obj_delete(s_weather_icon_objs[i]);
+            s_weather_icon_objs[i] = NULL;
+        }
+    }
+    s_weather_icon_count = 0;
+}
+
+// Clear animation particles
+static void clear_particles(void)
+{
+    s_animation_active = false;
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (s_particles[i]) {
+            lv_obj_delete(s_particles[i]);
+            s_particles[i] = NULL;
+        }
+    }
+}
+
+// Hide ALL screen-specific elements (call at start of each show_* function)
+static void hide_all_screen_elements(void)
+{
+    // Hide face elements
+    lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < 5; i++) {
+        if (s_renderer.mouth_dots[i]) {
+            lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_renderer.cat_arc_top) lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.cat_arc_bottom) lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < 6; i++) {
+        if (s_renderer.whisker_lines[i]) {
+            lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    if (s_renderer.left_brow) lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.right_brow) lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.left_sparkle) lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.right_sparkle) lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.mouth_bg) lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+
+    // Hide text label
+    lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Hide timer elements
+    if (s_timer_arc) lv_obj_add_flag(s_timer_arc, LV_OBJ_FLAG_HIDDEN);
+    if (s_timer_label_small) lv_obj_add_flag(s_timer_label_small, LV_OBJ_FLAG_HIDDEN);
+    if (s_timer_btn_start) lv_obj_add_flag(s_timer_btn_start, LV_OBJ_FLAG_HIDDEN);
+    if (s_timer_btn_pause) lv_obj_add_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
+
+    // Hide clock elements
+    if (s_clock_ampm_label) lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Hide shared screen tag
+    if (s_screen_tag_label) lv_obj_add_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Clear dynamic elements
+    clear_weather_icons();
+    clear_particles();
+}
+
+// Draw sun icon (circle + dots around it)
+static void draw_sun_icon(int cx, int cy, int radius)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    // Sun circle (main body)
+    lv_obj_t *sun = lv_obj_create(scr);
+    lv_obj_remove_style_all(sun);
+    lv_obj_set_size(sun, radius * 2, radius * 2);
+    lv_obj_set_pos(sun, cx - radius, cy - radius);
+    lv_obj_set_style_bg_color(sun, lv_color_hex(STYLE_ACCENT_COLOR), 0);  // Gold
+    lv_obj_set_style_bg_opa(sun, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(sun, LV_RADIUS_CIRCLE, 0);
+    s_weather_icon_objs[s_weather_icon_count++] = sun;
+
+    // Sun rays as dots (8 circles around the sun)
+    int dot_size = 12;  // Diameter of each ray dot
+    int ray_dist = radius + 18;  // Distance from center to ray dots
+    for (int i = 0; i < 8 && s_weather_icon_count < 10; i++) {
+        float angle = i * 3.14159f / 4.0f;
+        int rx = cx + (int)(cosf(angle) * ray_dist) - dot_size / 2;
+        int ry = cy + (int)(sinf(angle) * ray_dist) - dot_size / 2;
+
+        lv_obj_t *dot = lv_obj_create(scr);
+        lv_obj_remove_style_all(dot);
+        lv_obj_set_size(dot, dot_size, dot_size);
+        lv_obj_set_pos(dot, rx, ry);
+        lv_obj_set_style_bg_color(dot, lv_color_hex(STYLE_ACCENT_COLOR), 0);
+        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);  // Make it circular
+        s_weather_icon_objs[s_weather_icon_count++] = dot;
+    }
+}
+
+// Draw cloud icon (overlapping circles)
+static void draw_cloud_icon(int cx, int cy, int size, uint32_t color)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    // Cloud made of overlapping circles
+    int positions[][3] = {
+        {-size/2, 0, size/2},      // Left
+        {size/2, 0, size/2},       // Right
+        {0, -size/4, size*2/3},    // Top center (larger)
+        {-size/4, size/4, size/3}, // Bottom left
+        {size/4, size/4, size/3},  // Bottom right
+    };
+
+    for (int i = 0; i < 5 && s_weather_icon_count < 10; i++) {
+        lv_obj_t *part = lv_obj_create(scr);
+        lv_obj_remove_style_all(part);
+        int r = positions[i][2];
+        lv_obj_set_size(part, r * 2, r * 2);
+        lv_obj_set_pos(part, cx + positions[i][0] - r, cy + positions[i][1] - r);
+        lv_obj_set_style_bg_color(part, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(part, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(part, LV_RADIUS_CIRCLE, 0);
+        s_weather_icon_objs[s_weather_icon_count++] = part;
+    }
+}
+
+// Draw rain drops
+static void draw_rain_drops(int cx, int cy, int spread)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    // 3 rain drops
+    for (int i = 0; i < 3 && s_weather_icon_count < 10; i++) {
+        lv_obj_t *drop = lv_obj_create(scr);
+        lv_obj_remove_style_all(drop);
+        lv_obj_set_size(drop, 6, 20);
+        int dx = (i - 1) * spread;
+        lv_obj_set_pos(drop, cx + dx - 3, cy + i * 10);
+        lv_obj_set_style_bg_color(drop, lv_color_hex(COLOR_SKYBLUE), 0);  // Sky blue (weather)
+        lv_obj_set_style_bg_opa(drop, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(drop, 3, 0);
+        s_weather_icon_objs[s_weather_icon_count++] = drop;
+    }
+}
+
+// Draw snowflakes
+static void draw_snowflakes(int cx, int cy, int spread)
+{
+    lv_obj_t *scr = lv_scr_act();
+
+    // 4 snowflakes (small circles)
+    int positions[][2] = {{-spread, -10}, {spread, 0}, {0, 15}, {-spread/2, 5}};
+    for (int i = 0; i < 4 && s_weather_icon_count < 10; i++) {
+        lv_obj_t *flake = lv_obj_create(scr);
+        lv_obj_remove_style_all(flake);
+        lv_obj_set_size(flake, 10, 10);
+        lv_obj_set_pos(flake, cx + positions[i][0] - 5, cy + positions[i][1] - 5);
+        lv_obj_set_style_bg_color(flake, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(flake, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(flake, LV_RADIUS_CIRCLE, 0);
+        s_weather_icon_objs[s_weather_icon_count++] = flake;
+    }
+}
+
 void face_renderer_show_weather(const char *temp, weather_icon_t icon,
                                  const char *description)
 {
@@ -1348,28 +1791,57 @@ void face_renderer_show_weather(const char *temp, weather_icon_t icon,
         s_renderer.mode = DISPLAY_MODE_WEATHER;
 
         if (bsp_display_lock(100)) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            // Hide ALL other screen elements first
+            hide_all_screen_elements();
 
-            // TODO: Implement weather display widgets
-            // For now, use text display as placeholder
-            // Weather icon (sun, cloud, rain) should be drawn with LVGL shapes
-            // Temperature in large font
-            // Description in smaller font below
+            // Draw weather icon in upper portion
+            int icon_cx = s_renderer.width / 2;
+            int icon_cy = s_renderer.height / 3;
 
-            // Temporary: Show as text
-            char weather_text[128];
-            snprintf(weather_text, sizeof(weather_text), "%s\n%s", temp, description ? description : "");
+            switch (icon) {
+                case WEATHER_ICON_SUNNY:
+                    draw_sun_icon(icon_cx, icon_cy, 50);
+                    break;
+                case WEATHER_ICON_CLOUDY:
+                case WEATHER_ICON_PARTLY_CLOUDY:
+                    draw_cloud_icon(icon_cx, icon_cy, 60, 0xB0BEC5);  // Gray cloud
+                    break;
+                case WEATHER_ICON_RAINY:
+                case WEATHER_ICON_STORMY:
+                    draw_cloud_icon(icon_cx, icon_cy - 20, 50, 0x78909C);  // Dark gray
+                    draw_rain_drops(icon_cx, icon_cy + 10, 25);  // Closer to cloud
+                    break;
+                case WEATHER_ICON_SNOWY:
+                    draw_cloud_icon(icon_cx, icon_cy - 20, 50, 0xCFD8DC);  // Light gray
+                    draw_snowflakes(icon_cx, icon_cy + 15, 30);  // Closer to cloud
+                    break;
+                case WEATHER_ICON_FOGGY:
+                    draw_cloud_icon(icon_cx, icon_cy, 60, 0x9E9E9E);  // Gray fog
+                    break;
+                default:
+                    break;
+            }
 
-            // Use existing text label
+            // Show "Weather" tag in top-left
+            show_screen_tag("Weather");
+
+            // Temperature - large centered text below icon
             lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(s_renderer.text_label, weather_text);
-            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_label_set_text(s_renderer.text_label, temp);
+#ifdef SIMULATOR
+            lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_64, 0);
+#else
+            lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_48, 0);
+#endif
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(STYLE_PRIMARY_TEXT), 0);
             lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_center(s_renderer.text_label);
+            // Reset any scale transform from clock
+            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);  // 256 = 1.0x normal
+            lv_obj_set_style_transform_scale_y(s_renderer.text_label, 256, 0);
+            lv_obj_set_width(s_renderer.text_label, s_renderer.width);
+            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, 50);
+
+            // Description below temperature (if provided) - not used for now, keeping simple
 
             bsp_display_unlock();
         }
@@ -1387,30 +1859,188 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
         s_renderer.mode = DISPLAY_MODE_TIMER;
 
-        if (bsp_display_lock(100)) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        // Store timer state
+        s_timer_minutes = minutes;
+        s_timer_seconds = seconds;
+        s_timer_running = is_running;
 
-            // Format time as MM:SS
+        // Initialize total if this is a new/larger time
+        int current_total = minutes * 60 + seconds;
+        if (current_total > s_timer_total_seconds_start || !s_timer_running) {
+            s_timer_total_seconds_start = current_total;
+        }
+
+        if (bsp_display_lock(100)) {
+            // Hide ALL other screen elements first
+            hide_all_screen_elements();
+
+            lv_obj_t *scr = lv_scr_act();
+            int arc_radius = 140;
+            int arc_width = 20;  // Thicker stroke
+
+            // Create timer arc if not exists
+            if (!s_timer_arc) {
+                s_timer_arc = lv_arc_create(scr);
+                lv_arc_set_rotation(s_timer_arc, 270);  // Start from top
+                lv_arc_set_bg_angles(s_timer_arc, 0, 360);
+                lv_obj_remove_style(s_timer_arc, NULL, LV_PART_KNOB);  // Remove knob
+                lv_obj_remove_flag(s_timer_arc, LV_OBJ_FLAG_CLICKABLE);
+            }
+            lv_obj_set_size(s_timer_arc, arc_radius * 2, arc_radius * 2);
+            lv_obj_set_style_arc_width(s_timer_arc, arc_width, LV_PART_MAIN);
+            lv_obj_set_style_arc_width(s_timer_arc, arc_width, LV_PART_INDICATOR);
+            lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(COLOR_DEEPSEA), LV_PART_MAIN);  // Deep sea background
+            lv_obj_align(s_timer_arc, LV_ALIGN_CENTER, 0, -30);
+            lv_obj_clear_flag(s_timer_arc, LV_OBJ_FLAG_HIDDEN);
+
+            // Calculate progress
+            int current_seconds = minutes * 60 + seconds;
+            int arc_angle = 0;
+            if (s_timer_total_seconds_start > 0) {
+                arc_angle = (current_seconds * 360) / s_timer_total_seconds_start;
+            }
+            lv_arc_set_angles(s_timer_arc, 0, arc_angle);
+
+            // Arc color based on state - use moss green for focus timer
+            uint32_t arc_color = COLOR_MOSS;  // Moss green for progress bar
+            if (current_seconds <= 30 && current_seconds > 10 && is_running) {
+                arc_color = COLOR_TERRACOTTA;  // Terracotta when getting low
+            } else if (current_seconds <= 10 && is_running) {
+                arc_color = COLOR_REDWINE;  // Red wine when very low
+            }
+            lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(arc_color), LV_PART_INDICATOR);
+
+            // Time display - CENTERED INSIDE THE ARC
             char timer_text[64];
             snprintf(timer_text, sizeof(timer_text), "%02d:%02d", minutes, seconds);
 
-            // Use existing text label
             lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_renderer.text_label, timer_text);
-            lv_obj_set_style_text_color(s_renderer.text_label,
-                is_running ? lv_color_white() : lv_color_hex(0x888888), 0);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_48, 0);
             lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_center(s_renderer.text_label);
+            // Reset any scale transform from clock
+            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);  // 256 = 1.0x normal
+            lv_obj_set_style_transform_scale_y(s_renderer.text_label, 256, 0);
+            lv_obj_set_width(s_renderer.text_label, s_renderer.width);
+            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, -30);  // Inside arc
+
+            // "Focus" label in TOP-LEFT corner
+            if (!s_timer_label_small) {
+                s_timer_label_small = lv_label_create(scr);
+            }
+            lv_obj_clear_flag(s_timer_label_small, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(s_timer_label_small, label ? label : "Focus");
+            lv_obj_set_style_text_color(s_timer_label_small, lv_color_hex(STYLE_TAG_COLOR), 0);
+            lv_obj_set_style_text_font(s_timer_label_small, &lv_font_montserrat_20, 0);
+            lv_obj_set_pos(s_timer_label_small, STYLE_TAG_POS_X, STYLE_TAG_POS_Y);
+
+            // Create Start button
+            if (!s_timer_btn_start) {
+                s_timer_btn_start = lv_obj_create(scr);
+                lv_obj_remove_style_all(s_timer_btn_start);
+                lv_obj_set_size(s_timer_btn_start, 100, 45);
+                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_ACTIVE), 0);
+                lv_obj_set_style_bg_opa(s_timer_btn_start, LV_OPA_COVER, 0);
+                lv_obj_set_style_radius(s_timer_btn_start, 22, 0);
+
+                // Make button clickable and register event callback
+                lv_obj_add_flag(s_timer_btn_start, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_event_cb(s_timer_btn_start, timer_btn_start_click_cb, LV_EVENT_CLICKED, NULL);
+
+                s_timer_btn_label_start = lv_label_create(s_timer_btn_start);
+                lv_label_set_text(s_timer_btn_label_start, "Start");
+                lv_obj_set_style_text_color(s_timer_btn_label_start, lv_color_white(), 0);
+                lv_obj_set_style_text_font(s_timer_btn_label_start, &lv_font_montserrat_20, 0);
+                lv_obj_center(s_timer_btn_label_start);
+            }
+            lv_obj_align(s_timer_btn_start, LV_ALIGN_BOTTOM_MID, -60, -25);
+            lv_obj_clear_flag(s_timer_btn_start, LV_OBJ_FLAG_HIDDEN);
+
+            // Create Pause button
+            if (!s_timer_btn_pause) {
+                s_timer_btn_pause = lv_obj_create(scr);
+                lv_obj_remove_style_all(s_timer_btn_pause);
+                lv_obj_set_size(s_timer_btn_pause, 100, 45);
+                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
+                lv_obj_set_style_bg_opa(s_timer_btn_pause, LV_OPA_COVER, 0);
+                lv_obj_set_style_radius(s_timer_btn_pause, 22, 0);
+
+                // Make button clickable and register event callback
+                lv_obj_add_flag(s_timer_btn_pause, LV_OBJ_FLAG_CLICKABLE);
+                lv_obj_add_event_cb(s_timer_btn_pause, timer_btn_pause_click_cb, LV_EVENT_CLICKED, NULL);
+
+                s_timer_btn_label_pause = lv_label_create(s_timer_btn_pause);
+                lv_label_set_text(s_timer_btn_label_pause, "Pause");
+                lv_obj_set_style_text_color(s_timer_btn_label_pause, lv_color_white(), 0);
+                lv_obj_set_style_text_font(s_timer_btn_label_pause, &lv_font_montserrat_20, 0);
+                lv_obj_center(s_timer_btn_label_pause);
+            }
+            lv_obj_align(s_timer_btn_pause, LV_ALIGN_BOTTOM_MID, 60, -25);
+            lv_obj_clear_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
+
+            // Update button states based on running
+            if (is_running) {
+                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
+                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_WARN), 0);
+            } else {
+                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_ACTIVE), 0);
+                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
+            }
 
             bsp_display_unlock();
         }
 
         xSemaphoreGive(s_renderer.mutex);
-        ESP_LOGI(TAG, "Timer display: %02d:%02d %s", minutes, seconds, label ? label : "");
+        ESP_LOGI(TAG, "Timer display: %02d:%02d %s running=%d", minutes, seconds,
+                 label ? label : "Focus", is_running);
+    }
+}
+
+// Timer control functions
+void face_renderer_timer_start(void)
+{
+    s_timer_running = true;
+    s_timer_last_tick = esp_timer_get_time() / 1000;
+    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", true);
+}
+
+void face_renderer_timer_pause(void)
+{
+    s_timer_running = false;
+    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", false);
+}
+
+void face_renderer_timer_reset(int minutes)
+{
+    s_timer_minutes = minutes;
+    s_timer_seconds = 0;
+    s_timer_total_seconds_start = minutes * 60;
+    s_timer_running = false;
+    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", false);
+}
+
+bool face_renderer_timer_is_running(void)
+{
+    return s_timer_running;
+}
+
+// Timer button click event callbacks (for LVGL touch/click events)
+static void timer_btn_start_click_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Start button clicked");
+        face_renderer_timer_start();
+    }
+}
+
+static void timer_btn_pause_click_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        ESP_LOGI(TAG, "Pause button clicked");
+        face_renderer_timer_pause();
     }
 }
 
@@ -1422,35 +2052,175 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h)
         s_renderer.mode = DISPLAY_MODE_CLOCK;
 
         if (bsp_display_lock(100)) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            // Hide ALL other screen elements first
+            hide_all_screen_elements();
 
-            // Format time
+            lv_obj_t *scr = lv_scr_act();
+
+            // Format time - just hours:minutes in huge font
             char time_text[32];
-            if (is_24h) {
-                snprintf(time_text, sizeof(time_text), "%02d:%02d", hours, minutes);
-            } else {
-                int display_hours = hours % 12;
+            int display_hours = hours;
+            if (!is_24h) {
+                display_hours = hours % 12;
                 if (display_hours == 0) display_hours = 12;
-                const char* ampm = hours >= 12 ? "PM" : "AM";
-                snprintf(time_text, sizeof(time_text), "%d:%02d %s", display_hours, minutes, ampm);
             }
+            snprintf(time_text, sizeof(time_text), "%d:%02d", display_hours, minutes);
 
-            // Use existing text label
+            // Show "Clock" tag in top-left
+            show_screen_tag("Clock");
+
+            // Main time display - use largest font, centered properly
             lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_renderer.text_label, time_text);
-            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(STYLE_PRIMARY_TEXT), 0);
+#ifdef SIMULATOR
+            lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_64, 0);
+#else
+            lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_48, 0);
+#endif
             lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_center(s_renderer.text_label);
+            // Reset any scale transform (don't scale - causes pixelation)
+            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);  // 256 = 1.0x normal
+            lv_obj_set_style_transform_scale_y(s_renderer.text_label, 256, 0);
+            lv_obj_set_width(s_renderer.text_label, s_renderer.width);
+            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, is_24h ? 0 : -20);
+
+            // AM/PM label (if 12h mode)
+            if (!s_clock_ampm_label) {
+                s_clock_ampm_label = lv_label_create(scr);
+            }
+            if (!is_24h) {
+                const char* ampm = hours >= 12 ? "PM" : "AM";
+                lv_obj_clear_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_text(s_clock_ampm_label, ampm);
+                lv_obj_set_style_text_color(s_clock_ampm_label, lv_color_hex(STYLE_SECONDARY_TEXT), 0);
+                lv_obj_set_style_text_font(s_clock_ampm_label, &lv_font_montserrat_28, 0);
+                lv_obj_set_style_text_align(s_clock_ampm_label, LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(s_clock_ampm_label, s_renderer.width);
+                lv_obj_align(s_clock_ampm_label, LV_ALIGN_CENTER, 0, 40);
+            }
 
             bsp_display_unlock();
         }
 
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Clock display: %02d:%02d (24h=%d)", hours, minutes, is_24h);
+    }
+}
+
+// Initialize particles for animation
+static void init_particles(animation_type_t type)
+{
+    lv_obj_t *scr = lv_scr_act();
+    s_current_animation = type;
+
+    // Particle appearance based on type
+    uint32_t color = 0x4FC3F7;  // Default light blue for rain
+    int size = 6;
+
+    switch (type) {
+        case ANIMATION_RAIN:
+            color = COLOR_SKYBLUE;  // Sky blue for rain
+            size = 4;
+            break;
+        case ANIMATION_SNOW:
+            color = 0xFFFFFF;  // Pure white for snow
+            size = 8;
+            break;
+        case ANIMATION_STARS:
+            color = COLOR_SUNSHINE;  // Sunshine for stars
+            size = 6;
+            break;
+        case ANIMATION_MATRIX:
+            color = COLOR_MOSS;  // Moss green for matrix
+            size = 10;
+            break;
+    }
+
+    // Create particles
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (!s_particles[i]) {
+            s_particles[i] = lv_obj_create(scr);
+            lv_obj_remove_style_all(s_particles[i]);
+        }
+
+        // Random initial position
+        s_particle_x[i] = (float)(esp_random() % s_renderer.width);
+        s_particle_y[i] = (float)(esp_random() % s_renderer.height);
+
+        // Random speed
+        float base_speed = (type == ANIMATION_SNOW) ? 30.0f : 100.0f;
+        s_particle_speed[i] = base_speed + (esp_random() % 50);
+
+        // Set particle appearance
+        int particle_size = size + (esp_random() % 4) - 2;
+        if (particle_size < 2) particle_size = 2;
+
+        lv_obj_set_size(s_particles[i], particle_size,
+            (type == ANIMATION_RAIN) ? particle_size * 3 : particle_size);
+        lv_obj_set_pos(s_particles[i], (int)s_particle_x[i], (int)s_particle_y[i]);
+        lv_obj_set_style_bg_color(s_particles[i], lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(s_particles[i], LV_OPA_COVER, 0);
+
+        if (type == ANIMATION_STARS || type == ANIMATION_SNOW) {
+            lv_obj_set_style_radius(s_particles[i], LV_RADIUS_CIRCLE, 0);
+        } else {
+            lv_obj_set_style_radius(s_particles[i], 2, 0);
+        }
+
+        lv_obj_clear_flag(s_particles[i], LV_OBJ_FLAG_HIDDEN);
+    }
+
+    s_animation_active = true;
+}
+
+// Update particle animation (called from tick)
+static void update_particles(float delta_time)
+{
+    if (!s_animation_active) return;
+
+    for (int i = 0; i < MAX_PARTICLES; i++) {
+        if (!s_particles[i]) continue;
+
+        switch (s_current_animation) {
+            case ANIMATION_RAIN:
+            case ANIMATION_SNOW:
+                // Fall down
+                s_particle_y[i] += s_particle_speed[i] * delta_time;
+                // Add slight horizontal drift for snow
+                if (s_current_animation == ANIMATION_SNOW) {
+                    s_particle_x[i] += sinf(s_particle_y[i] * 0.02f) * 20.0f * delta_time;
+                }
+                // Wrap around
+                if (s_particle_y[i] > s_renderer.height) {
+                    s_particle_y[i] = -10;
+                    s_particle_x[i] = (float)(esp_random() % s_renderer.width);
+                }
+                if (s_particle_x[i] < 0) s_particle_x[i] += s_renderer.width;
+                if (s_particle_x[i] > s_renderer.width) s_particle_x[i] -= s_renderer.width;
+                break;
+
+            case ANIMATION_STARS:
+                // Twinkle (change opacity)
+                {
+                    int opa = 128 + (int)(sinf(s_particle_y[i] + s_particle_speed[i] * 0.1f) * 127);
+                    s_particle_y[i] += delta_time * 50;  // Slow drift for twinkle phase
+                    lv_obj_set_style_bg_opa(s_particles[i], opa, 0);
+                }
+                break;
+
+            case ANIMATION_MATRIX:
+                // Fall down fast
+                s_particle_y[i] += s_particle_speed[i] * delta_time * 2;
+                if (s_particle_y[i] > s_renderer.height) {
+                    s_particle_y[i] = -20;
+                    s_particle_x[i] = (float)(esp_random() % s_renderer.width);
+                    s_particle_speed[i] = 100.0f + (esp_random() % 100);
+                }
+                break;
+        }
+
+        lv_obj_set_pos(s_particles[i], (int)s_particle_x[i], (int)s_particle_y[i]);
     }
 }
 
@@ -1462,24 +2232,21 @@ void face_renderer_show_animation(animation_type_t type)
         s_renderer.mode = DISPLAY_MODE_ANIMATION;
 
         if (bsp_display_lock(100)) {
-            // Hide face widgets
-            lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+            // Hide ALL other screen elements first
+            hide_all_screen_elements();
 
-            // TODO: Implement animations
-            // ANIMATION_RAIN: Falling blue dots
-            // ANIMATION_SNOW: Falling white dots (slower)
-            // ANIMATION_STARS: Twinkling dots
-            // ANIMATION_MATRIX: Green falling characters
+            // Show animation type as tag in top-left
+            const char* tag_text = "Animation";
+            switch (type) {
+                case ANIMATION_RAIN: tag_text = "Rain"; break;
+                case ANIMATION_SNOW: tag_text = "Snow"; break;
+                case ANIMATION_STARS: tag_text = "Stars"; break;
+                case ANIMATION_MATRIX: tag_text = "Matrix"; break;
+            }
+            show_screen_tag(tag_text);
 
-            // Placeholder text
-            const char* anim_names[] = {"Rain", "Snow", "Stars", "Matrix"};
-            lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
-            lv_label_set_text(s_renderer.text_label, anim_names[type]);
-            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_white(), 0);
-            lv_obj_center(s_renderer.text_label);
+            // Initialize new particles
+            init_particles(type);
 
             bsp_display_unlock();
         }
@@ -1498,8 +2265,8 @@ void face_renderer_clear_display(void)
         s_renderer.mode = DISPLAY_MODE_FACE;
 
         if (bsp_display_lock(100)) {
-            // Hide text label
-            lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+            // Hide ALL screen elements
+            hide_all_screen_elements();
 
             // Show face widgets
             lv_obj_clear_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
@@ -1507,6 +2274,10 @@ void face_renderer_clear_display(void)
 
             // Update background
             lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(BG_COLOR), 0);
+
+            // Force full redraw
+            s_renderer.last_eye_x = -1000;
+            s_renderer.last_mouth_curve = -1000;
 
             bsp_display_unlock();
         }
@@ -1524,4 +2295,68 @@ display_mode_t face_renderer_get_mode(void)
 float face_renderer_get_fps(void)
 {
     return s_renderer.actual_fps;
+}
+
+void face_renderer_tick(uint32_t delta_time_ms)
+{
+    if (!s_renderer.initialized) {
+        return;
+    }
+
+    // Use minimum 5ms delta to ensure animations progress
+    if (delta_time_ms < 5) delta_time_ms = 5;
+
+    float delta_time = delta_time_ms / 1000.0f;
+
+    // Clamp delta time
+    if (delta_time > 0.1f) delta_time = 0.1f;
+
+    // Take mutex (non-blocking in simulator - just try once)
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(10)) == pdTRUE) {
+        if (s_renderer.mode == DISPLAY_MODE_FACE) {
+            // Update animation state (blink, emotion transition, gaze)
+            update_animation(delta_time);
+
+            // Update petting (touch-based face movement)
+            // Now works in simulator too since bsp_display_get_input_dev() returns SDL mouse
+            update_petting(delta_time);
+
+            // Update face widgets
+            update_face_widgets();
+        } else if (s_renderer.mode == DISPLAY_MODE_ANIMATION) {
+            // Update particle animation
+            if (bsp_display_lock(10)) {
+                update_particles(delta_time);
+                bsp_display_unlock();
+            }
+        } else if (s_renderer.mode == DISPLAY_MODE_TIMER && s_timer_running) {
+            // Update timer countdown
+            int64_t now = esp_timer_get_time() / 1000;
+            if (s_timer_last_tick == 0) {
+                s_timer_last_tick = now;
+            }
+
+            int64_t elapsed = now - s_timer_last_tick;
+            if (elapsed >= 1000) {  // 1 second passed
+                s_timer_last_tick = now;
+
+                // Decrement timer
+                if (s_timer_seconds > 0) {
+                    s_timer_seconds--;
+                } else if (s_timer_minutes > 0) {
+                    s_timer_minutes--;
+                    s_timer_seconds = 59;
+                } else {
+                    // Timer finished
+                    s_timer_running = false;
+                }
+
+                // Update display (release mutex first to avoid deadlock)
+                xSemaphoreGive(s_renderer.mutex);
+                face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", s_timer_running);
+                return;  // Already released mutex
+            }
+        }
+        xSemaphoreGive(s_renderer.mutex);
+    }
 }
