@@ -117,6 +117,8 @@ static struct {
     lv_obj_t *cat_arc_bottom;   // Bottom arc for cat :3 mouth
     lv_obj_t *whisker_lines[6]; // Line widgets for angled whiskers
     lv_point_precise_t whisker_points[6][2];  // Points for each whisker line
+    lv_obj_t *wavy_mouth;       // Line widget for dizzy wavy mouth
+    lv_point_precise_t wavy_mouth_points[24];  // Points for wavy sine line (more = smoother)
     lv_obj_t *left_brow;
     lv_obj_t *right_brow;
     lv_obj_t *left_sparkle;
@@ -381,6 +383,21 @@ static void create_face_widgets(lv_obj_t *parent)
         lv_obj_set_pos(s_renderer.whisker_lines[i], -100, -100);
         lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
     }
+
+    // Wavy mouth line for dizzy state (24 points for smooth curves)
+    // Initialize points to minimal line
+    for (int i = 0; i < 24; i++) {
+        s_renderer.wavy_mouth_points[i].x = i * 5;
+        s_renderer.wavy_mouth_points[i].y = 0;
+    }
+    s_renderer.wavy_mouth = lv_line_create(parent);
+    lv_obj_remove_style_all(s_renderer.wavy_mouth);
+    lv_obj_set_style_line_color(s_renderer.wavy_mouth, face_color, 0);
+    lv_obj_set_style_line_width(s_renderer.wavy_mouth, (int)(5 * SCALE_Y), 0);
+    lv_obj_set_style_line_rounded(s_renderer.wavy_mouth, true, 0);
+    lv_line_set_points(s_renderer.wavy_mouth, s_renderer.wavy_mouth_points, 24);
+    lv_obj_set_pos(s_renderer.wavy_mouth, -100, -100);
+    lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
 }
 
 // Update face widget positions and sizes
@@ -403,7 +420,7 @@ static void update_face_widgets(void)
 
     // Apply dizzy wobble effect (eyes at different heights)
     if (s_renderer.is_dizzy) {
-        float wobble = sinf(s_renderer.dizzy_wobble) * 10.0f * SCALE_Y;
+        float wobble = sinf(s_renderer.dizzy_wobble) * 14.0f * SCALE_Y;
         left_eye_height += wobble;
         right_eye_height -= wobble;  // Opposite wobble for dizzy effect
     }
@@ -430,7 +447,7 @@ static void update_face_widgets(void)
 
     // Add extra tilt during dizzy wobble
     if (s_renderer.is_dizzy) {
-        float tilt_wobble = cosf(s_renderer.dizzy_wobble * 1.5f) * 5.0f * SCALE_Y;
+        float tilt_wobble = cosf(s_renderer.dizzy_wobble * 1.5f) * 8.0f * SCALE_Y;
         left_tilt += (int)tilt_wobble;
         right_tilt -= (int)tilt_wobble;
     }
@@ -518,6 +535,7 @@ static void update_face_widgets(void)
         // Hide all mouth widgets first (simple hide - no invalidation to avoid artifacts)
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
 
         for (int i = 0; i < 5; i++) {
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
@@ -684,6 +702,48 @@ static void update_face_widgets(void)
         }
 
         s_renderer.last_mouth_curve = curve_category;
+    }
+
+    // Wavy mouth for dizzy state (overrides normal mouth, animates each frame)
+    if (s_renderer.is_dizzy) {
+        // Hide all normal mouth widgets
+        lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < 5; i++) {
+            lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+        for (int i = 0; i < 6; i++) {
+            lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
+        }
+
+        // Generate wavy sine line points (24 points for smoother curves)
+        int wavy_width = (int)(100 * SCALE_X);  // Total width of wavy line
+        int wavy_amplitude = (int)(10 * SCALE_Y);  // Height of wave
+        int num_points = 24;
+        int segment_width = wavy_width / (num_points - 1);
+
+        // Use dizzy_wobble as phase offset to animate the wave
+        float phase = s_renderer.dizzy_wobble * 2.0f;
+
+        for (int i = 0; i < num_points; i++) {
+            s_renderer.wavy_mouth_points[i].x = i * segment_width;
+            // Use smoother wave frequency (0.4 instead of 0.8) for rounder curves
+            s_renderer.wavy_mouth_points[i].y = wavy_amplitude +
+                (int)(sinf(phase + i * 0.4f) * wavy_amplitude);
+        }
+
+        // Position wavy mouth at center of face
+        int wavy_x = mouth_x - wavy_width / 2;
+        int wavy_y = mouth_y - wavy_amplitude;
+
+        lv_line_set_points(s_renderer.wavy_mouth, s_renderer.wavy_mouth_points, num_points);
+        lv_obj_set_pos(s_renderer.wavy_mouth, wavy_x, wavy_y);
+        lv_obj_remove_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        // Hide wavy mouth when not dizzy
+        lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
     }
 
     // Update angry brows
