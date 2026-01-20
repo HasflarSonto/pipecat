@@ -238,17 +238,34 @@ idf.py fullclean
 
 ### Display Modes
 
-The ESP32 has three display modes controlled by `face_renderer.c`:
+The ESP32 has eight display modes controlled by `face_renderer.c`:
 
 | Mode | Enum | Description |
 |------|------|-------------|
 | **Face** | `DISPLAY_MODE_FACE` | Animated face with emotions, gaze tracking, petting |
 | **Text** | `DISPLAY_MODE_TEXT` | Text/numbers/emojis with configurable font, color |
 | **Pixel Art** | `DISPLAY_MODE_PIXEL_ART` | 12x16 grid for drawings |
+| **Weather** | `DISPLAY_MODE_WEATHER` | Temperature + weather icon (sunny, cloudy, etc.) |
+| **Timer** | `DISPLAY_MODE_TIMER` | Pomodoro-style countdown with arc indicator |
+| **Clock** | `DISPLAY_MODE_CLOCK` | Digital time display (12h/24h) |
+| **Subway** | `DISPLAY_MODE_SUBWAY` | MTA train arrival times |
+| **Animation** | `DISPLAY_MODE_ANIMATION` | Animated effects (rain, snow, stars, matrix) |
 
 **Emotions** (9 total): neutral, happy, sad, angry, surprised, thinking, confused, excited, cat
 
 **Cat Face**: `:3` mouth using dual arcs + angled whiskers (lv_line), triggered by petting
+
+### Touch Interactions
+
+Touch-based interactions in face mode:
+
+| Interaction | Trigger | Effect |
+|-------------|---------|--------|
+| **Petting** | Drag up/down on face | Auto-switches to cat face, face "giggles" with drag |
+| **Eye Poke** | Click directly on eye | That eye winks closed briefly |
+| **Dizzy** | Shake window (simulator) or D key | Face wobbles with wavy mouth for 3 seconds |
+
+Note: These interactions only activate when in `DISPLAY_MODE_FACE`
 
 ### LLM Tools (Display-Related)
 
@@ -262,6 +279,34 @@ Tools the AI can call in `my_bot.py`:
 | `clear_drawing` | - | Clear pixel art → face |
 | `clear_text_display` | - | Clear text → face |
 
+### Simulator
+
+Desktop simulator for development without hardware. Located in `esp32-luna/simulator/`.
+
+```bash
+cd esp32-luna/simulator
+mkdir -p build && cd build
+cmake .. && cmake --build .
+./luna_simulator [host] [port]  # Default: localhost:7860
+```
+
+**Keyboard Controls:**
+| Key | Action |
+|-----|--------|
+| 1-9 | Set emotion (1=neutral, 2=happy, ...9=cat) |
+| F | Face mode |
+| C | Clock mode |
+| W | Weather mode |
+| T | Timer mode (S=start, P=pause, R=reset) |
+| A | Animation mode |
+| M | Subway/MTA mode |
+| D | Trigger dizzy effect |
+| B | Force blink |
+| SPACE | Toggle demo mode |
+| H | Show help |
+
+**Mouse:** Click eye to poke, drag up/down to pet, shake window for dizzy.
+
 ### WebSocket Protocol
 
 Connects to `ws://<SERVER_IP>:8765/luna-esp32`
@@ -274,6 +319,12 @@ Connects to `ws://<SERVER_IP>:8765/luna-esp32`
 {"cmd": "text_clear"}
 {"cmd": "pixel_art", "pixels": [{"x": 0, "y": 0, "c": "#FF0000"}], "bg": "#1E1E28"}
 {"cmd": "pixel_art_clear"}
+{"cmd": "weather", "temp": "72°F", "icon": "sunny", "desc": "Clear"}
+{"cmd": "timer", "minutes": 25, "seconds": 0, "label": "Focus", "running": true}
+{"cmd": "clock", "hours": 14, "minutes": 30, "is_24h": true}
+{"cmd": "subway", "line": "1", "color": "#EE352E", "station": "110 St", "direction": "↓", "times": [3, 8, 12]}
+{"cmd": "animation", "type": "rain"}
+{"cmd": "clear_display"}
 {"cmd": "audio_start"}
 {"cmd": "audio_stop"}
 ```

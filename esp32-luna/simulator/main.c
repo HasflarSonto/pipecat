@@ -108,9 +108,16 @@ static void update_lvgl_tick(void)
 /**
  * Handle shake detection callback
  * Called when window is moved rapidly back and forth
+ * Only triggers dizzy effect when in face mode (like pet/poke)
  */
 static void shake_callback(float intensity)
 {
+    /* Only trigger dizzy when in face mode */
+    if (face_renderer_get_mode() != DISPLAY_MODE_FACE) {
+        printf("Shake callback: ignored (not in face mode)\n");
+        return;
+    }
+
     printf("Shake callback: intensity=%.2f\n", intensity);
 
     /* Set dizzy state */
@@ -682,11 +689,17 @@ static void keyboard_handler(int key)
             printf("Manual: Blink!\n");
             break;
 
-        /* D = Trigger dizzy effect */
+        /* D = Trigger dizzy effect (switch to face mode first if needed) */
         case SDLK_d:
             g_demo_mode = false;
-            face_renderer_clear_display();
-            shake_callback(0.8f);  /* Simulate shake */
+            /* Switch to face mode first if not already there */
+            if (face_renderer_get_mode() != DISPLAY_MODE_FACE) {
+                face_renderer_clear_display();
+            }
+            /* Now trigger dizzy directly */
+            g_dizzy_active = true;
+            g_dizzy_start_time = get_time_ms();
+            face_renderer_set_dizzy(true);
             printf("Manual: Dizzy! (move window rapidly back and forth to trigger naturally)\n");
             break;
 
