@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional, TypedDict, Union
 
 import aiohttp
 import uvicorn
+from google.protobuf import descriptor_pb2
+import time as time_module
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -235,6 +237,18 @@ class ESP32Session:
         await self.send_json({"cmd": "audio_stop"})
         self.audio_enabled = False
 
+    async def send_subway(self, line: str, line_color: str, station: str,
+                          direction: str, times: list):
+        """Send subway arrival times to ESP32."""
+        await self.send_json({
+            "cmd": "subway",
+            "line": line,
+            "color": line_color,
+            "station": station,
+            "direction": direction,
+            "times": times
+        })
+
 
 # Active ESP32 sessions
 esp32_sessions: Dict[str, ESP32Session] = {}
@@ -385,25 +399,36 @@ class ESP32AudioOutputProcessor(FrameProcessor):
 
         # Capture TTS audio and send to ESP32
         elif isinstance(frame, TTSAudioRawFrame):
-            if self.session.connected:
-                # TTS audio might be at different sample rate (e.g., 24kHz)
-                # Resample to 16kHz for ESP32 if needed
-                audio_data = frame.audio
+            # Debug: Log when TTS audio can't be sent
+            if not self.session.connected:
+                if self._tts_chunks_sent == 0:  # Only log once per TTS session
+                    print("   ⚠️  Cannot send TTS audio - ESP32 disconnected")
+                    logger.warning("ESP32: TTS audio dropped - session disconnected")
+                return
+            if not self.session.audio_enabled:
+                if self._tts_chunks_sent == 0:  # Only log once per TTS session
+                    print("   ⚠️  Cannot send TTS audio - audio not enabled")
+                    logger.warning("ESP32: TTS audio dropped - audio not enabled")
+                return
 
-                if frame.sample_rate != self.target_sample_rate:
-                    # Simple resample by skipping/duplicating samples
-                    # For production, use proper resampling library
-                    audio_data = self._resample_audio(
-                        frame.audio,
-                        frame.sample_rate,
-                        self.target_sample_rate
-                    )
+            # TTS audio might be at different sample rate (e.g., 24kHz)
+            # Resample to 16kHz for ESP32 if needed
+            audio_data = frame.audio
 
-                # Send audio to ESP32
-                await self.session.send_audio(audio_data)
-                self._tts_chunks_sent += 1
-                if self._tts_chunks_sent % 50 == 0:
-                    print(f"   🔊 TTS audio: {self._tts_chunks_sent} chunks sent to ESP32")
+            if frame.sample_rate != self.target_sample_rate:
+                # Simple resample by skipping/duplicating samples
+                # For production, use proper resampling library
+                audio_data = self._resample_audio(
+                    frame.audio,
+                    frame.sample_rate,
+                    self.target_sample_rate
+                )
+
+            # Send audio to ESP32
+            await self.session.send_audio(audio_data)
+            self._tts_chunks_sent += 1
+            if self._tts_chunks_sent % 50 == 0:
+                print(f"   🔊 TTS audio: {self._tts_chunks_sent} chunks sent to ESP32")
 
     def _resample_audio(self, audio: bytes, from_rate: int, to_rate: int) -> bytes:
         """Simple audio resampling (linear interpolation)."""
@@ -551,6 +576,156 @@ async def get_current_time(params: FunctionCallParams):
     except Exception as e:
         logger.error(f"Time error: {e}")
         await params.result_callback(f"I couldn't get the time for that timezone. Try a timezone like 'America/New_York' or 'Europe/London'.")
+
+
+# MTA Subway line colors
+MTA_LINE_COLORS = {
+    "1": "#EE352E", "2": "#EE352E", "3": "#EE352E",  # Red
+    "4": "#00933C", "5": "#00933C", "6": "#00933C",  # Green
+    "7": "#B933AD",  # Purple
+    "A": "#0039A6", "C": "#0039A6", "E": "#0039A6",  # Blue
+    "B": "#FF6319", "D": "#FF6319", "F": "#FF6319", "M": "#FF6319",  # Orange
+    "G": "#6CBE45",  # Light Green
+    "J": "#996633", "Z": "#996633",  # Brown
+    "L": "#A7A9AC",  # Gray
+    "N": "#FCCC0A", "Q": "#FCCC0A", "R": "#FCCC0A", "W": "#FCCC0A",  # Yellow
+    "S": "#808183",  # Shuttle Gray
+}
+
+# Stop IDs for common stations (downtown/southbound use S suffix)
+# Format: "Station Name": {"N": "uptown_stop_id", "S": "downtown_stop_id"}
+MTA_STOP_IDS = {
+    "110 St": {"1": {"N": "117N", "S": "117S"}},  # 110th St on 1/2/3
+    "116 St": {"1": {"N": "116N", "S": "116S"}},  # 116th St Columbia on 1
+    "125 St": {"1": {"N": "115N", "S": "115S"}},  # 125th St on 1
+    "Times Sq": {"1": {"N": "127N", "S": "127S"}, "N": {"N": "R16N", "S": "R16S"}},
+    "14 St": {"1": {"N": "132N", "S": "132S"}, "A": {"N": "A31N", "S": "A31S"}},
+}
+
+async def get_subway_times(params: FunctionCallParams):
+    """Get real-time MTA subway arrival times."""
+    global current_esp32_session
+
+    line = params.arguments.get("line", "1").upper()
+    station = params.arguments.get("station", "110 St")
+    direction = params.arguments.get("direction", "downtown").lower()
+    logger.info(f"Getting subway times for {line} train at {station} {direction}")
+
+    # Map direction to N/S suffix
+    dir_suffix = "S" if direction in ["downtown", "south", "southbound", "s"] else "N"
+    dir_name = "Downtown" if dir_suffix == "S" else "Uptown"
+
+    # Get the line color
+    line_color = MTA_LINE_COLORS.get(line, "#FFFFFF")
+
+    try:
+        # MTA GTFS-Realtime API endpoints by line group
+        # 1/2/3/4/5/6/S use one feed, others use different feeds
+        feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
+
+        if line in ["A", "C", "E"]:
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
+        elif line in ["B", "D", "F", "M"]:
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"
+        elif line == "G":
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-g"
+        elif line in ["J", "Z"]:
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-jz"
+        elif line == "L":
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-l"
+        elif line in ["N", "Q", "R", "W"]:
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw"
+        elif line == "7":
+            feed_url = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-7"
+
+        # Determine stop ID
+        stop_id = None
+        if station in MTA_STOP_IDS:
+            station_stops = MTA_STOP_IDS[station]
+            if line in station_stops:
+                stop_id = station_stops[line].get(dir_suffix)
+            elif "1" in station_stops and line in ["1", "2", "3"]:
+                # 1/2/3 share stops
+                stop_id = station_stops["1"].get(dir_suffix)
+
+        # Default to 110 St downtown for 1 train
+        if not stop_id:
+            stop_id = "117S" if dir_suffix == "S" else "117N"
+            station = "110 St"
+
+        # Fetch GTFS-Realtime data
+        async with aiohttp.ClientSession() as session:
+            async with session.get(feed_url) as resp:
+                if resp.status != 200:
+                    await params.result_callback(f"Couldn't reach MTA data feed. Status: {resp.status}")
+                    return
+                data = await resp.read()
+
+        # Parse GTFS-Realtime protobuf
+        # Using the gtfs-realtime.proto structure
+        from google.transit import gtfs_realtime_pb2
+
+        feed = gtfs_realtime_pb2.FeedMessage()
+        feed.ParseFromString(data)
+
+        now = time_module.time()
+        arrivals = []
+
+        for entity in feed.entity:
+            if not entity.HasField("trip_update"):
+                continue
+
+            trip = entity.trip_update
+            trip_route = trip.trip.route_id
+
+            # Match the line (1, 2, 3 all use same feed)
+            if trip_route != line:
+                continue
+
+            for stop_time in trip.stop_time_update:
+                if stop_time.stop_id == stop_id:
+                    # Get arrival time
+                    arrival_time = stop_time.arrival.time if stop_time.HasField("arrival") else stop_time.departure.time
+                    if arrival_time > now:
+                        minutes = int((arrival_time - now) / 60)
+                        if minutes >= 0 and minutes <= 60:  # Only show arrivals within the hour
+                            arrivals.append(minutes)
+
+        # Sort and take top 3
+        arrivals.sort()
+        arrivals = arrivals[:3]
+
+        if not arrivals:
+            await params.result_callback(f"No upcoming {line} trains found at {station} {dir_name}. Service may be disrupted.")
+            return
+
+        # Send to ESP32 if connected
+        if current_esp32_session and current_esp32_session.connected:
+            await current_esp32_session.send_subway(line, line_color, station, dir_name, arrivals)
+
+        # Format response
+        if len(arrivals) == 1:
+            time_str = f"{arrivals[0]} minute{'s' if arrivals[0] != 1 else ''}"
+        else:
+            time_str = ", ".join(str(t) for t in arrivals[:-1]) + f" and {arrivals[-1]} minutes"
+
+        result = f"The next {line} train at {station} {dir_name} arrives in {time_str}."
+        await params.result_callback(result)
+
+    except ImportError:
+        # gtfs_realtime_pb2 not available, try to generate it or use fallback
+        logger.warning("gtfs_realtime_pb2 not found, using demo data")
+        # Fallback to demo data
+        demo_times = [3, 8, 12]
+        if current_esp32_session and current_esp32_session.connected:
+            await current_esp32_session.send_subway(line, line_color, station, dir_name, demo_times)
+        await params.result_callback(f"The next {line} train at {station} {dir_name} arrives in 3, 8, and 12 minutes. (Demo data - GTFS parser not available)")
+
+    except Exception as e:
+        logger.error(f"Subway API error: {e}")
+        import traceback
+        traceback.print_exc()
+        await params.result_callback(f"I had trouble getting subway times. Error: {str(e)}")
 
 
 # Global references for emotion updates
@@ -955,7 +1130,28 @@ stay_quiet_tool = FunctionSchema(
     required=["emotion"],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool, display_text_tool, clear_text_tool, stay_quiet_tool])
+subway_tool = FunctionSchema(
+    name="get_subway_times",
+    description="Get real-time MTA subway arrival times for NYC trains. Shows when the next trains are arriving at a station. The display will show the train line, station, direction, and arrival times in minutes.",
+    properties={
+        "line": {
+            "type": "string",
+            "description": "The subway line (e.g., '1', '2', '3', 'A', 'C', 'E', 'N', 'Q', 'R', '7', etc.)",
+        },
+        "station": {
+            "type": "string",
+            "description": "The station name (e.g., '110 St', 'Times Sq', '14 St'). Default is '110 St' for the 1 train.",
+        },
+        "direction": {
+            "type": "string",
+            "description": "Direction of travel: 'downtown' (south) or 'uptown' (north). Default is 'downtown'.",
+            "enum": ["downtown", "uptown"],
+        },
+    },
+    required=["line"],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool, display_text_tool, clear_text_tool, stay_quiet_tool, subway_tool])
 
 
 # ============== BOT LOGIC ==============
@@ -1013,6 +1209,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("display_text", display_text)
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("stay_quiet", stay_quiet)
+    llm.register_function("get_subway_times", get_subway_times)
 
     # System prompt
     messages = [
@@ -1233,13 +1430,17 @@ async def run_esp32_bot(session: ESP32Session):
     global current_esp32_session
     logger.info("Starting ESP32 bot pipeline")
 
-    # Create an audio queue for the session
-    session.audio_queue = asyncio.Queue()
+    # Use existing audio queue (created in WebSocket handler to avoid race condition)
+    # Only create if it doesn't exist (shouldn't happen, but defensive)
+    if not hasattr(session, 'audio_queue') or session.audio_queue is None:
+        session.audio_queue = asyncio.Queue()
+        logger.warning("Audio queue was not pre-created - this may indicate a bug")
 
     # VAD for voice activity detection
+    # Note: min_volume=0.3 is lower than default (0.6) to be more sensitive to ESP32 mic
     vad_analyzer = SileroVADAnalyzer(params=VADParams(
         stop_secs=0.5,    # Wait before considering speech stopped
-        min_volume=0.6,   # Minimum volume threshold
+        min_volume=0.3,   # Lower threshold for ESP32 mic (default 0.6 was too high)
     ))
 
     # Create ESP32 transport processors
@@ -1276,12 +1477,14 @@ async def run_esp32_bot(session: ESP32Session):
     llm.register_function("display_text", display_text)
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("stay_quiet", stay_quiet)
+    llm.register_function("get_subway_times", get_subway_times)
     # Note: take_photo not available on ESP32 (no camera support yet)
 
     # ESP32 tools list (without photo tool, temporarily without stay_quiet for testing)
     esp32_tools = ToolsSchema(standard_tools=[
         weather_tool, search_tool, time_tool, emotion_tool,
-        draw_tool, clear_draw_tool, display_text_tool, clear_text_tool
+        draw_tool, clear_draw_tool, display_text_tool, clear_text_tool,
+        subway_tool
         # stay_quiet_tool removed temporarily - LLM was overusing it
     ])
 
@@ -1338,6 +1541,7 @@ Be warm but brief. Your name is Luna.""",
             audio_in_sample_rate=16000,   # ESP32 sends 16kHz audio
             audio_out_sample_rate=24000,  # TTS outputs 24kHz, ESP32AudioOutputProcessor resamples to 16kHz
             enable_metrics=True,
+            idle_timeout_secs=None,       # Disable idle timeout for ESP32 - connection stays open
         ),
     )
 
@@ -1449,12 +1653,17 @@ def create_app():
         esp32_sessions[session_id] = session
         current_esp32_session = session
 
-        print(f"\n🔌 ESP32 CONNECTED: {session_id}")
+        print(f"\n🔌 ESP32 CONNECTED: {session_id}", flush=True)
         logger.info(f"ESP32 connected: {session_id}")
 
         # Send initial happy emotion
         await session.send_emotion("happy")
         print(f"   Sent initial 'happy' emotion to ESP32")
+
+        # CRITICAL: Create audio queue BEFORE starting pipeline to avoid race condition
+        # The pipeline task will use this queue, and audio can start arriving immediately
+        session.audio_queue = asyncio.Queue()
+        print(f"   Audio queue created")
 
         # Audio buffer for accumulating microphone data
         audio_buffer = bytearray()
@@ -1466,9 +1675,15 @@ def create_app():
             print(f"   Starting ESP32 bot pipeline...")
             asyncio.create_task(run_esp32_bot(session))
 
+            total_messages = 0
             while True:
                 # Receive message from ESP32
                 message = await websocket.receive()
+                total_messages += 1
+
+                # Debug: log message types periodically
+                if total_messages <= 3:
+                    print(f"   📩 Message {total_messages}: type={message.get('type')}, keys={list(message.keys())}")
 
                 if message["type"] == "websocket.disconnect":
                     break
@@ -1495,6 +1710,10 @@ def create_app():
                     # Binary audio from ESP32 microphone
                     audio_data = message["bytes"]
                     audio_buffer.extend(audio_data)
+
+                    # Debug: print first few binary messages
+                    if audio_chunk_count < 5:
+                        print(f"   📦 Binary data received: {len(audio_data)} bytes (buffer: {len(audio_buffer)})")
 
                     # Process complete chunks
                     while len(audio_buffer) >= AUDIO_CHUNK_SIZE:

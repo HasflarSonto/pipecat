@@ -1596,6 +1596,12 @@ static int64_t s_timer_last_tick = 0;
 // Clock AM/PM label
 static lv_obj_t *s_clock_ampm_label = NULL;
 
+// Subway display widgets
+static lv_obj_t *s_subway_circle = NULL;       // Colored circle for line
+static lv_obj_t *s_subway_line_label = NULL;   // Line name inside circle
+static lv_obj_t *s_subway_station_label = NULL; // Station name
+static lv_obj_t *s_subway_time_labels[3] = {NULL, NULL, NULL};  // Arrival times
+
 // Shared screen tag label (used for "Weather", "Clock", etc. in top-left)
 static lv_obj_t *s_screen_tag_label = NULL;
 
@@ -1674,6 +1680,14 @@ static void hide_all_screen_elements(void)
 
     // Hide clock elements
     if (s_clock_ampm_label) lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Hide subway elements
+    if (s_subway_circle) lv_obj_add_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
+    if (s_subway_line_label) lv_obj_add_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_subway_station_label) lv_obj_add_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < 3; i++) {
+        if (s_subway_time_labels[i]) lv_obj_add_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Hide shared screen tag
     if (s_screen_tag_label) lv_obj_add_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
@@ -2105,6 +2119,114 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h)
 
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Clock display: %02d:%02d (24h=%d)", hours, minutes, is_24h);
+    }
+}
+
+void face_renderer_show_subway(const char *line, uint32_t line_color,
+                                const char *station, const char *direction,
+                                const int *times, int num_times)
+{
+    if (!s_renderer.initialized) return;
+    if (num_times < 1 || num_times > 3) num_times = 1;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_SUBWAY;
+
+        if (bsp_display_lock(100)) {
+            hide_all_screen_elements();
+
+            lv_obj_t *scr = lv_scr_act();
+            int center_x = s_renderer.width / 2;
+
+            // Show "Subway" tag in top-left
+            show_screen_tag("Subway");
+
+            // Train line circle (like MTA bullet)
+            int circle_radius = 50;
+            if (!s_subway_circle) {
+                s_subway_circle = lv_obj_create(scr);
+                lv_obj_remove_style_all(s_subway_circle);
+            }
+            lv_obj_set_size(s_subway_circle, circle_radius * 2, circle_radius * 2);
+            lv_obj_set_style_bg_color(s_subway_circle, lv_color_hex(line_color), 0);
+            lv_obj_set_style_bg_opa(s_subway_circle, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(s_subway_circle, LV_RADIUS_CIRCLE, 0);
+            lv_obj_align(s_subway_circle, LV_ALIGN_TOP_MID, 0, 50);
+            lv_obj_clear_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
+
+            // Line name inside circle (e.g., "1", "A", "N")
+            if (!s_subway_line_label) {
+                s_subway_line_label = lv_label_create(scr);
+            }
+            lv_label_set_text(s_subway_line_label, line);
+            lv_obj_set_style_text_color(s_subway_line_label, lv_color_white(), 0);
+            lv_obj_set_style_text_font(s_subway_line_label, &lv_font_montserrat_48, 0);
+            lv_obj_set_style_text_align(s_subway_line_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_align(s_subway_line_label, LV_ALIGN_TOP_MID, 0, 50 + circle_radius - 24);
+            lv_obj_clear_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
+
+            // Station name with direction arrow
+            char station_text[64];
+            snprintf(station_text, sizeof(station_text), "%s %s", station, direction);
+            if (!s_subway_station_label) {
+                s_subway_station_label = lv_label_create(scr);
+            }
+            lv_label_set_text(s_subway_station_label, station_text);
+            lv_obj_set_style_text_color(s_subway_station_label, lv_color_hex(STYLE_SECONDARY_TEXT), 0);
+            lv_obj_set_style_text_font(s_subway_station_label, &lv_font_montserrat_24, 0);
+            lv_obj_set_style_text_align(s_subway_station_label, LV_TEXT_ALIGN_CENTER, 0);
+            lv_obj_set_width(s_subway_station_label, s_renderer.width);
+            lv_obj_align(s_subway_station_label, LV_ALIGN_TOP_MID, 0, 50 + circle_radius * 2 + 15);
+            lv_obj_clear_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
+
+            // Arrival times - larger first time, smaller subsequent times
+            int y_offset = 50 + circle_radius * 2 + 60;
+            for (int i = 0; i < 3; i++) {
+                if (!s_subway_time_labels[i]) {
+                    s_subway_time_labels[i] = lv_label_create(scr);
+                }
+
+                if (i < num_times) {
+                    char time_text[32];
+                    if (times[i] <= 0) {
+                        snprintf(time_text, sizeof(time_text), "NOW");
+                    } else if (i == 0) {
+                        // First time: just the number (large font may not have lowercase)
+                        snprintf(time_text, sizeof(time_text), "%d MIN", times[i]);
+                    } else if (times[i] == 1) {
+                        snprintf(time_text, sizeof(time_text), "1 min");
+                    } else {
+                        snprintf(time_text, sizeof(time_text), "%d min", times[i]);
+                    }
+                    lv_label_set_text(s_subway_time_labels[i], time_text);
+
+                    // First time is large and white, others are smaller and sand colored
+                    if (i == 0) {
+                        lv_obj_set_style_text_font(s_subway_time_labels[i], &lv_font_montserrat_48, 0);
+                        lv_obj_set_style_text_color(s_subway_time_labels[i], lv_color_white(), 0);
+                    } else {
+                        lv_obj_set_style_text_font(s_subway_time_labels[i], &lv_font_montserrat_28, 0);
+                        lv_obj_set_style_text_color(s_subway_time_labels[i], lv_color_hex(STYLE_SECONDARY_TEXT), 0);
+                    }
+
+                    lv_obj_set_style_text_align(s_subway_time_labels[i], LV_TEXT_ALIGN_CENTER, 0);
+                    lv_obj_set_width(s_subway_time_labels[i], s_renderer.width);
+                    lv_obj_align(s_subway_time_labels[i], LV_ALIGN_TOP_MID, 0, y_offset);
+                    lv_obj_clear_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+
+                    // Spacing between times
+                    y_offset += (i == 0) ? 60 : 35;
+                } else {
+                    lv_obj_add_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+                }
+            }
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Subway display: %s line at %s %s, %d arrivals",
+                 line, station, direction, num_times);
     }
 }
 

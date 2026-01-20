@@ -27,6 +27,7 @@ typedef enum {
     DISPLAY_MODE_TIMER,       // Pomodoro/countdown timer
     DISPLAY_MODE_CLOCK,       // Time display
     DISPLAY_MODE_ANIMATION,   // Custom animations (rain, snow, etc.)
+    DISPLAY_MODE_SUBWAY,      // MTA subway arrival times
 } display_mode_t;
 
 /**
@@ -226,6 +227,19 @@ bool face_renderer_timer_is_running(void);
  * @param is_24h True for 24-hour format
  */
 void face_renderer_show_clock(int hours, int minutes, bool is_24h);
+
+/**
+ * @brief Show subway arrival display
+ * @param line Train line (e.g., "1", "A", "N")
+ * @param line_color Line color (RGB888, e.g., 0xEE352E for red)
+ * @param station Station name (e.g., "110 St")
+ * @param direction Direction arrow: "↑" for uptown/north, "↓" for downtown/south
+ * @param times Array of arrival times in minutes (up to 3)
+ * @param num_times Number of times in array (1-3)
+ */
+void face_renderer_show_subway(const char *line, uint32_t line_color,
+                                const char *station, const char *direction,
+                                const int *times, int num_times);
 
 /**
  * @brief Show animation

@@ -630,6 +630,16 @@ static void keyboard_handler(int key)
             }
             break;
 
+        /* M = Subway/MTA mode (demo data for 1 train at 110 St downtown) */
+        case SDLK_m:
+            g_demo_mode = false;
+            {
+                int demo_times[] = {3, 8, 12};
+                face_renderer_show_subway("1", 0xEE352E, "110 St", "Downtown", demo_times, 3);
+                printf("Manual: Subway mode -> 1 train at 110 St downtown (3, 8, 12 min)\n");
+            }
+            break;
+
         /* Space = Toggle demo mode */
         case SDLK_SPACE:
             g_demo_mode = !g_demo_mode;
@@ -692,6 +702,7 @@ static void keyboard_handler(int key)
             printf("  P    : Pause timer\n");
             printf("  R    : Reset timer to 25:00\n");
             printf("A      : Animation mode\n");
+            printf("M      : Subway/MTA mode (demo: 1 train at 110 St)\n");
             printf("B      : Force blink\n");
             printf("D      : Trigger dizzy effect (or move window rapidly)\n");
             printf("SPACE  : Toggle demo mode\n");

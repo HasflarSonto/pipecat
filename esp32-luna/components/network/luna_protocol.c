@@ -251,6 +251,50 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
         cmd->type = LUNA_CMD_CLEAR_DISPLAY;
         ESP_LOGD(TAG, "Parsed clear_display");
     }
+    else if (strcmp(cmd_str, "subway") == 0) {
+        cmd->type = LUNA_CMD_SUBWAY;
+        cJSON *line = cJSON_GetObjectItem(root, "line");
+        cJSON *color = cJSON_GetObjectItem(root, "color");
+        cJSON *station = cJSON_GetObjectItem(root, "station");
+        cJSON *direction = cJSON_GetObjectItem(root, "direction");
+        cJSON *times = cJSON_GetObjectItem(root, "times");
+
+        if (line && cJSON_IsString(line)) {
+            strncpy(cmd->data.subway.line, line->valuestring,
+                    sizeof(cmd->data.subway.line) - 1);
+        }
+        if (color && cJSON_IsString(color)) {
+            luna_protocol_parse_color(color->valuestring, &cmd->data.subway.line_color);
+        } else {
+            cmd->data.subway.line_color = 0xEE352E;  // Default MTA red
+        }
+        if (station && cJSON_IsString(station)) {
+            strncpy(cmd->data.subway.station, station->valuestring,
+                    sizeof(cmd->data.subway.station) - 1);
+        }
+        if (direction && cJSON_IsString(direction)) {
+            strncpy(cmd->data.subway.direction, direction->valuestring,
+                    sizeof(cmd->data.subway.direction) - 1);
+        } else {
+            strcpy(cmd->data.subway.direction, "↓");  // Default downtown
+        }
+
+        // Parse times array
+        cmd->data.subway.num_times = 0;
+        if (times && cJSON_IsArray(times)) {
+            int count = cJSON_GetArraySize(times);
+            if (count > 3) count = 3;
+            for (int i = 0; i < count; i++) {
+                cJSON *t = cJSON_GetArrayItem(times, i);
+                if (t && cJSON_IsNumber(t)) {
+                    cmd->data.subway.times[cmd->data.subway.num_times++] = t->valueint;
+                }
+            }
+        }
+        ESP_LOGD(TAG, "Parsed subway: %s at %s %s, %d times",
+                 cmd->data.subway.line, cmd->data.subway.station,
+                 cmd->data.subway.direction, cmd->data.subway.num_times);
+    }
     else {
         ESP_LOGW(TAG, "Unknown command: %s", cmd_str);
     }
