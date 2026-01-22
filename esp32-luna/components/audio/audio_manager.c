@@ -41,22 +41,29 @@ esp_err_t audio_manager_init(void)
         return ESP_FAIL;
     }
 
-    // Configure sample format
-    esp_codec_dev_sample_info_t sample_info = {
+    // Configure sample format for PLAYBACK (mono - TTS audio is mono)
+    esp_codec_dev_sample_info_t play_sample_info = {
         .sample_rate = AUDIO_SAMPLE_RATE,
-        .channel = AUDIO_CHANNELS,
+        .channel = AUDIO_OUTPUT_CHANNELS,  // 1 (mono) for TTS playback
         .bits_per_sample = AUDIO_BIT_WIDTH,
     };
 
-    // Open playback device
-    esp_err_t ret = esp_codec_dev_open(s_play_dev, &sample_info);
+    // Configure sample format for RECORDING (stereo - for DOA processing)
+    esp_codec_dev_sample_info_t record_sample_info = {
+        .sample_rate = AUDIO_SAMPLE_RATE,
+        .channel = AUDIO_CHANNELS,  // 2 (stereo) for microphone
+        .bits_per_sample = AUDIO_BIT_WIDTH,
+    };
+
+    // Open playback device with MONO config
+    esp_err_t ret = esp_codec_dev_open(s_play_dev, &play_sample_info);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open playback device: %d", ret);
         return ret;
     }
 
-    // Open recording device
-    ret = esp_codec_dev_open(s_record_dev, &sample_info);
+    // Open recording device with STEREO config
+    ret = esp_codec_dev_open(s_record_dev, &record_sample_info);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Failed to open recording device: %d", ret);
         return ret;
@@ -75,8 +82,8 @@ esp_err_t audio_manager_init(void)
     }
 
     s_initialized = true;
-    ESP_LOGI(TAG, "Audio manager initialized (rate=%d, bits=%d, ch=%d)",
-             AUDIO_SAMPLE_RATE, AUDIO_BIT_WIDTH, AUDIO_CHANNELS);
+    ESP_LOGI(TAG, "Audio manager initialized (rate=%d, bits=%d, play_ch=%d, rec_ch=%d)",
+             AUDIO_SAMPLE_RATE, AUDIO_BIT_WIDTH, AUDIO_OUTPUT_CHANNELS, AUDIO_CHANNELS);
 
     return ESP_OK;
 }
@@ -190,18 +197,25 @@ esp_err_t audio_manager_suspend(bool suspend)
         }
         ESP_LOGI(TAG, "Audio suspended");
     } else {
-        esp_codec_dev_sample_info_t sample_info = {
+        // Playback uses mono
+        esp_codec_dev_sample_info_t play_sample_info = {
+            .sample_rate = AUDIO_SAMPLE_RATE,
+            .channel = AUDIO_OUTPUT_CHANNELS,
+            .bits_per_sample = AUDIO_BIT_WIDTH,
+        };
+        // Recording uses stereo
+        esp_codec_dev_sample_info_t record_sample_info = {
             .sample_rate = AUDIO_SAMPLE_RATE,
             .channel = AUDIO_CHANNELS,
             .bits_per_sample = AUDIO_BIT_WIDTH,
         };
 
         if (s_play_dev) {
-            esp_codec_dev_open(s_play_dev, &sample_info);
+            esp_codec_dev_open(s_play_dev, &play_sample_info);
             esp_codec_dev_set_out_vol(s_play_dev, s_volume);
         }
         if (s_record_dev) {
-            esp_codec_dev_open(s_record_dev, &sample_info);
+            esp_codec_dev_open(s_record_dev, &record_sample_info);
         }
         ESP_LOGI(TAG, "Audio resumed");
     }

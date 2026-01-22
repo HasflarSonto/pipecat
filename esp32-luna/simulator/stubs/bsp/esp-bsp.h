@@ -8,6 +8,7 @@
 
 #include "esp_err.h"
 #include "lvgl.h"
+#include "hal/sdl_mouse.h"
 
 /**
  * Display configuration (not used in simulator)
@@ -73,11 +74,11 @@ static inline void bsp_display_backlight_off(void)
 }
 
 /**
- * Get input device - returns NULL in simulator (we handle input separately)
+ * Get input device - returns SDL mouse input device for LVGL click events
  */
-static inline void* bsp_display_get_input_dev(void)
+static inline lv_indev_t* bsp_display_get_input_dev(void)
 {
-    return NULL;
+    return sdl_mouse_get_indev();
 }
 
 #endif /* ESP_BSP_H */

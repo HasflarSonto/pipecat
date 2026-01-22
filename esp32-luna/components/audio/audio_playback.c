@@ -16,7 +16,7 @@ static const char *TAG = "audio_playback";
 
 #define PLAYBACK_TASK_STACK_SIZE  (4 * 1024)
 #define PLAYBACK_TASK_PRIORITY    6
-#define DEFAULT_BUFFER_SIZE       (32 * 1024)  // 32KB ring buffer (2 seconds at 16kHz mono)
+#define DEFAULT_BUFFER_SIZE       (64 * 1024)  // 64KB ring buffer (4 seconds at 16kHz mono)
 #define PLAYBACK_CHUNK_SIZE       (AUDIO_CHUNK_SAMPLES * sizeof(int16_t))
 
 static RingbufHandle_t s_ringbuf = NULL;

@@ -107,3 +107,8 @@ void sdl_mouse_set_callback(touch_callback_t cb)
 {
     s_touch_callback = cb;
 }
+
+lv_indev_t* sdl_mouse_get_indev(void)
+{
+    return s_indev;
+}

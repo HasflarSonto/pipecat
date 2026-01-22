@@ -28,7 +28,17 @@ typedef enum {
     DISPLAY_MODE_CLOCK,       // Time display
     DISPLAY_MODE_ANIMATION,   // Custom animations (rain, snow, etc.)
     DISPLAY_MODE_SUBWAY,      // MTA subway arrival times
+    DISPLAY_MODE_CALENDAR,    // Calendar events (Apple Watch style cards)
 } display_mode_t;
+
+/**
+ * @brief Calendar event structure (for Apple Watch style display)
+ */
+typedef struct {
+    char time_str[32];        // Time range (e.g., "10:00-11:00 AM")
+    char title[64];           // Event title
+    char location[64];        // Location (optional, can be empty)
+} calendar_event_t;
 
 /**
  * @brief Weather icon type
@@ -221,12 +231,13 @@ void face_renderer_timer_reset(int minutes);
 bool face_renderer_timer_is_running(void);
 
 /**
- * @brief Show clock display
+ * @brief Show clock display (Apple Watch style)
  * @param hours Hour (0-23)
  * @param minutes Minute (0-59)
  * @param is_24h True for 24-hour format
+ * @param date_str Date string (e.g., "TUE JAN 21") or NULL for no date
  */
-void face_renderer_show_clock(int hours, int minutes, bool is_24h);
+void face_renderer_show_clock(int hours, int minutes, bool is_24h, const char *date_str);
 
 /**
  * @brief Show subway arrival display
@@ -240,6 +251,13 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h);
 void face_renderer_show_subway(const char *line, uint32_t line_color,
                                 const char *station, const char *direction,
                                 const int *times, int num_times);
+
+/**
+ * @brief Show calendar display (Apple Watch style cards)
+ * @param events Array of calendar events
+ * @param num_events Number of events (1-3)
+ */
+void face_renderer_show_calendar(const calendar_event_t *events, int num_events);
 
 /**
  * @brief Show animation

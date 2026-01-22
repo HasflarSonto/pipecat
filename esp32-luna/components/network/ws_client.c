@@ -152,9 +152,9 @@ esp_err_t ws_client_connect(void)
 
     esp_websocket_client_config_t ws_cfg = {
         .uri = uri,
-        .buffer_size = 4096,
-        .task_stack = 6 * 1024,
-        .task_prio = 5,
+        .buffer_size = 8192,             // Increased from 4096 for better throughput
+        .task_stack = 8 * 1024,          // Increased stack for stability
+        .task_prio = 6,                  // Higher priority for WebSocket task
         .reconnect_timeout_ms = s_config.reconnect_ms > 0 ? s_config.reconnect_ms : 10000,
         .network_timeout_ms = 10000,
     };
@@ -231,19 +231,20 @@ esp_err_t ws_client_send_binary(const uint8_t *data, size_t len)
         return ESP_ERR_INVALID_STATE;
     }
 
-    if (xSemaphoreTake(s_send_mutex, pdMS_TO_TICKS(100)) != pdTRUE) {
+    // Try to get lock - if busy, just drop this chunk (audio can tolerate drops)
+    if (xSemaphoreTake(s_send_mutex, pdMS_TO_TICKS(50)) != pdTRUE) {
+        // Don't log error - this is expected under high load
+        static int drop_count = 0;
+        if (++drop_count >= 50) {
+            ESP_LOGW(TAG, "Dropped %d audio chunks (WS busy)", drop_count);
+            drop_count = 0;
+        }
         return ESP_ERR_TIMEOUT;
     }
 
-    // Add 2-byte length header (big-endian)
-    uint8_t header[2];
-    header[0] = (len >> 8) & 0xFF;
-    header[1] = len & 0xFF;
-
-    // Send header + data
-    // Note: For efficiency, we should use a single send with combined buffer
-    // but esp_websocket_client doesn't support scatter-gather, so we send as-is
-    int sent = esp_websocket_client_send_bin(s_client, (const char *)data, len, pdMS_TO_TICKS(1000));
+    // Send data with short timeout to fail fast on network congestion
+    // 100ms is enough for normal operation, longer blocks cause audio backlog
+    int sent = esp_websocket_client_send_bin(s_client, (const char *)data, len, pdMS_TO_TICKS(100));
 
     xSemaphoreGive(s_send_mutex);
 

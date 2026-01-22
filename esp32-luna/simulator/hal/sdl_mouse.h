@@ -43,4 +43,11 @@ void sdl_mouse_get_state(bool* is_pressed, int* x, int* y);
 typedef void (*touch_callback_t)(bool pressed, int x, int y);
 void sdl_mouse_set_callback(touch_callback_t cb);
 
+/**
+ * Get the LVGL input device
+ * Used by BSP stub for LVGL click events
+ * @return LVGL input device pointer
+ */
+lv_indev_t* sdl_mouse_get_indev(void);
+
 #endif /* SDL_MOUSE_H */

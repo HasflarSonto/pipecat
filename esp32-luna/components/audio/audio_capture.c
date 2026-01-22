@@ -15,9 +15,10 @@
 static const char *TAG = "audio_capture";
 
 #define CAPTURE_TASK_STACK_SIZE  (4 * 1024)
-#define CAPTURE_TASK_PRIORITY    6
-#define DEFAULT_BUFFER_SIZE      (16 * 1024)  // 16KB ring buffer
+#define CAPTURE_TASK_PRIORITY    5              // Lower priority than WebSocket (6)
+#define DEFAULT_BUFFER_SIZE      (32 * 1024)   // 32KB ring buffer (increased from 16KB)
 #define CAPTURE_CHUNK_SIZE       (AUDIO_CHUNK_SAMPLES * AUDIO_CHANNELS * sizeof(int16_t))
+#define SEND_EVERY_N_CHUNKS      2              // Only send every Nth chunk to reduce network load
 
 static RingbufHandle_t s_ringbuf = NULL;
 static RingbufHandle_t s_stereo_ringbuf = NULL;  // For DOA processing
@@ -35,6 +36,7 @@ static int16_t s_mono_buffer[AUDIO_CHUNK_SAMPLES];
 static void capture_task(void *pvParameters)
 {
     ESP_LOGI(TAG, "Capture task started");
+    int chunk_counter = 0;  // For rate limiting WebSocket sends
 
     while (s_running) {
         size_t bytes_read = 0;
@@ -48,6 +50,7 @@ static void capture_task(void *pvParameters)
             continue;
         }
 
+        chunk_counter++;
         int samples = bytes_read / (AUDIO_CHANNELS * sizeof(int16_t));
 
         // Store stereo data for DOA processing
@@ -73,21 +76,19 @@ static void capture_task(void *pvParameters)
             output_size = bytes_read;
         }
 
-        // Send to ring buffer
+        // Send to ring buffer (for local consumers like DOA, if any)
+        // This ring buffer is optional - the main audio path is via callback
         if (s_ringbuf) {
             BaseType_t sent = xRingbufferSend(s_ringbuf, output_buffer, output_size, 0);
             if (sent != pdTRUE) {
-                // Throttle warning to reduce log spam
-                static int drop_count = 0;
-                if (++drop_count >= 100) {
-                    ESP_LOGW(TAG, "Ring buffer full, dropped %d chunks", drop_count);
-                    drop_count = 0;
-                }
+                // Ring buffer full - this is OK, just means no local consumer is reading
+                // Don't block or throttle because of this - the callback path is primary
             }
         }
 
-        // Call callback if registered
-        if (s_callback) {
+        // Call callback for WebSocket streaming - this is the PRIMARY audio path
+        // Only send every Nth chunk to reduce network pressure
+        if (s_callback && (chunk_counter % SEND_EVERY_N_CHUNKS == 0)) {
             s_callback(output_buffer, output_size / sizeof(int16_t), s_callback_ctx);
         }
     }

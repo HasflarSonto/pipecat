@@ -61,6 +61,10 @@ from pipecat.transports.smallwebrtc.request_handler import (
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
 from luna_face_renderer import LunaFaceRenderer
+from calendar_integration import (
+    get_upcoming_events, get_todays_events, get_next_event,
+    format_events_for_voice, is_configured as calendar_is_configured
+)
 
 load_dotenv(override=True)
 
@@ -728,6 +732,45 @@ async def get_subway_times(params: FunctionCallParams):
         await params.result_callback(f"I had trouble getting subway times. Error: {str(e)}")
 
 
+async def get_calendar(params: FunctionCallParams):
+    """Get upcoming events from the user's Google Calendar."""
+    query_type = params.arguments.get("query", "upcoming")
+    logger.info(f"Getting calendar events: {query_type}")
+
+    if not calendar_is_configured():
+        await params.result_callback(
+            "Calendar is not configured yet. Please set up Google Calendar credentials. "
+            "Check the calendar_integration.py file for setup instructions."
+        )
+        return
+
+    try:
+        if query_type == "today":
+            events = get_todays_events()
+            if not events:
+                await params.result_callback("You have no events scheduled for today.")
+                return
+            result = format_events_for_voice(events)
+        elif query_type == "next":
+            event = get_next_event()
+            if not event:
+                await params.result_callback("You have no upcoming events.")
+                return
+            result = f"Your next event is {event.summary} {event.time_until()}."
+        else:  # "upcoming" - default
+            events = get_upcoming_events(max_results=5)
+            if not events:
+                await params.result_callback("You have no upcoming events in the next 24 hours.")
+                return
+            result = format_events_for_voice(events)
+
+        await params.result_callback(result)
+
+    except Exception as e:
+        logger.error(f"Calendar error: {e}")
+        await params.result_callback("I had trouble accessing your calendar. Please try again.")
+
+
 # Global references for emotion updates
 current_task = None
 face_renderer = None
@@ -1151,7 +1194,20 @@ subway_tool = FunctionSchema(
     required=["line"],
 )
 
-tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool, display_text_tool, clear_text_tool, stay_quiet_tool, subway_tool])
+calendar_tool = FunctionSchema(
+    name="get_calendar",
+    description="Get upcoming events from the user's Google Calendar. Use this when the user asks about their schedule, appointments, meetings, or what's next on their agenda.",
+    properties={
+        "query": {
+            "type": "string",
+            "description": "Type of query: 'upcoming' (next 24 hours, default), 'today' (all events today), or 'next' (just the next event)",
+            "enum": ["upcoming", "today", "next"],
+        },
+    },
+    required=[],
+)
+
+tools = ToolsSchema(standard_tools=[weather_tool, search_tool, time_tool, emotion_tool, draw_tool, clear_draw_tool, photo_tool, display_text_tool, clear_text_tool, stay_quiet_tool, subway_tool, calendar_tool])
 
 
 # ============== BOT LOGIC ==============
@@ -1210,6 +1266,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("stay_quiet", stay_quiet)
     llm.register_function("get_subway_times", get_subway_times)
+    llm.register_function("get_calendar", get_calendar)
 
     # System prompt
     messages = [
@@ -1307,7 +1364,11 @@ When you call stay_quiet:
 2. DO NOT generate any text/speech after the function call
 3. Your entire response should just be the function call, nothing else
 
-Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, take_photo, display_text, clear_text_display, stay_quiet
+Tools: get_weather, web_search, get_current_time, set_emotion, draw_pixel_art, clear_drawing, take_photo, display_text, clear_text_display, stay_quiet, get_calendar
+
+5. CALENDAR (get_calendar) - Check user's schedule
+   - "what's on my calendar", "what's next", "my schedule"
+   - Returns upcoming events from Google Calendar
 
 Be warm but brief. Your name is Luna.""",
         },
@@ -1478,13 +1539,14 @@ async def run_esp32_bot(session: ESP32Session):
     llm.register_function("clear_text_display", clear_text_display)
     llm.register_function("stay_quiet", stay_quiet)
     llm.register_function("get_subway_times", get_subway_times)
+    llm.register_function("get_calendar", get_calendar)
     # Note: take_photo not available on ESP32 (no camera support yet)
 
     # ESP32 tools list (without photo tool, temporarily without stay_quiet for testing)
     esp32_tools = ToolsSchema(standard_tools=[
         weather_tool, search_tool, time_tool, emotion_tool,
         draw_tool, clear_draw_tool, display_text_tool, clear_text_tool,
-        subway_tool
+        subway_tool, calendar_tool
         # stay_quiet_tool removed temporarily - LLM was overusing it
     ])
 

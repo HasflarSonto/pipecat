@@ -46,6 +46,7 @@ include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/stubs
     ${CMAKE_CURRENT_SOURCE_DIR}/hal
     ${CMAKE_CURRENT_SOURCE_DIR}/net
+    ${CMAKE_CURRENT_SOURCE_DIR}/fonts
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/luna_face
     ${CMAKE_CURRENT_SOURCE_DIR}/../components/network
     ${SDL2_INCLUDE_DIRS}
@@ -62,6 +63,8 @@ set(SOURCES
     hal/sdl_audio.c
     net/ws_client_sim.c
     stubs/esp_stubs.c
+    # Custom fonts
+    fonts/lv_font_montserrat_64.c
     # Luna face components (from ESP32 project)
     ../components/luna_face/face_renderer.c
     ../components/luna_face/emotions.c

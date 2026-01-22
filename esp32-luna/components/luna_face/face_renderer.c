@@ -34,30 +34,48 @@ static const char *TAG = "face_renderer";
 #define DEFAULT_WIDTH       502
 #define DEFAULT_HEIGHT      410
 
-// Colors - New palette
-#define BG_COLOR            0x000000    // Pure black background
+// Colors - Apple Watch inspired palette
+#define BG_COLOR            0x000000    // Pure black background (AMOLED efficient)
 #define FACE_COLOR          0xFFFFFF    // Pure white for eyes/face features
 
-// Color palette
+// Apple-style color palette
+#define COLOR_CARD_BG       0x1C1C1E    // Dark gray card background
+#define COLOR_CARD_BG_ALT   0x2C2C2E    // Slightly lighter card variant
+#define COLOR_ACCENT_BLUE   0x0A84FF    // Apple system blue (primary accent)
+#define COLOR_ACCENT_GREEN  0x30D158    // Apple system green
+#define COLOR_ACCENT_ORANGE 0xFF9F0A    // Apple system orange
+#define COLOR_ACCENT_RED    0xFF453A    // Apple system red
+#define COLOR_ACCENT_YELLOW 0xFFD60A    // Apple system yellow
+#define COLOR_TEXT_PRIMARY  0xFFFFFF    // White text
+#define COLOR_TEXT_SECONDARY 0x8E8E93   // Gray secondary text
+#define COLOR_TEXT_TERTIARY 0x636366    // Darker gray tertiary text
+
+// Legacy colors (keep for compatibility)
 #define COLOR_SAND          0xE4CBA9    // Sand - warm neutral
 #define COLOR_SKYBLUE       0x7FC7CC    // Sky blue - calm, cool
-#define COLOR_DEEPSEA       0x092F33    // Deep sea - dark accent
-#define COLOR_MOSS          0x4B5B34    // Moss green - nature, focus/timer
-#define COLOR_TERRACOTTA    0xAF5031    // Terracotta - warm warning
+#define COLOR_DEEPSEA       0x1C1C1E    // Now maps to card background
+#define COLOR_MOSS          0x30D158    // Now maps to Apple green
+#define COLOR_TERRACOTTA    0xFF9F0A    // Now maps to Apple orange
 #define COLOR_CHERRY        0xFDABA5    // Cherry blossom - soft pink
-#define COLOR_REDWINE       0x980204    // Red wine - urgent/error
-#define COLOR_SUNSHINE      0xEA8913    // Sunshine - warm yellow/orange
+#define COLOR_REDWINE       0xFF453A    // Now maps to Apple red
+#define COLOR_SUNSHINE      0xFFD60A    // Now maps to Apple yellow
+
+// Card styling
+#define CARD_RADIUS         24          // Rounded corner radius for cards
+#define CARD_PADDING        16          // Internal padding
+#define CARD_MARGIN         12          // Space between cards
+#define CARD_WIDTH          (DEFAULT_WIDTH - 40)  // Full width minus margins
 
 // Standardized UI Style
-#define STYLE_TAG_COLOR     COLOR_SAND      // Sand for top-left screen tags
+#define STYLE_TAG_COLOR     COLOR_TEXT_SECONDARY  // Gray for top-left screen tags
 #define STYLE_TAG_POS_X     20              // Top-left tag X position
 #define STYLE_TAG_POS_Y     15              // Top-left tag Y position
-#define STYLE_PRIMARY_TEXT  0xFFFFFF        // Pure white for primary content
-#define STYLE_SECONDARY_TEXT COLOR_SAND     // Sand for secondary info
-#define STYLE_ACCENT_COLOR  COLOR_SUNSHINE  // Sunshine for weather sun icon
-#define STYLE_BUTTON_ACTIVE COLOR_MOSS      // Moss green for timer/active buttons
-#define STYLE_BUTTON_WARN   COLOR_TERRACOTTA // Terracotta for warning/pause
-#define STYLE_BUTTON_INACTIVE COLOR_DEEPSEA // Deep sea for inactive buttons
+#define STYLE_PRIMARY_TEXT  COLOR_TEXT_PRIMARY    // Pure white for primary content
+#define STYLE_SECONDARY_TEXT COLOR_TEXT_SECONDARY // Gray for secondary info
+#define STYLE_ACCENT_COLOR  COLOR_ACCENT_BLUE     // Blue for accents/highlights
+#define STYLE_BUTTON_ACTIVE COLOR_ACCENT_GREEN    // Green for timer/active buttons
+#define STYLE_BUTTON_WARN   COLOR_ACCENT_ORANGE   // Orange for warning/pause
+#define STYLE_BUTTON_INACTIVE COLOR_CARD_BG       // Card bg for inactive buttons
 
 // Animation timing - VERY SLOW to avoid SPI overflow
 #define ANIMATION_PERIOD_MS    200      // ~5 FPS to reduce SPI load
@@ -1628,6 +1646,8 @@ void face_renderer_clear_pixel_art(void)
 // Weather icon drawing helpers - static widgets created once
 static lv_obj_t *s_weather_icon_objs[10] = {0};  // For sun rays, cloud shapes, etc.
 static int s_weather_icon_count = 0;
+static lv_obj_t *s_weather_card = NULL;
+static lv_obj_t *s_weather_desc_label = NULL;
 
 // Animation particles
 #define MAX_PARTICLES 30
@@ -1655,8 +1675,11 @@ static int64_t s_timer_last_tick = 0;
 
 // Clock AM/PM label
 static lv_obj_t *s_clock_ampm_label = NULL;
+static lv_obj_t *s_clock_date_label = NULL;
+static lv_obj_t *s_clock_card = NULL;
 
 // Subway display widgets
+static lv_obj_t *s_subway_card = NULL;         // Card background
 static lv_obj_t *s_subway_circle = NULL;       // Colored circle for line
 static lv_obj_t *s_subway_line_label = NULL;   // Line name inside circle
 static lv_obj_t *s_subway_station_label = NULL; // Station name
@@ -1679,7 +1702,30 @@ static void show_screen_tag(const char *tag_text)
     lv_obj_set_pos(s_screen_tag_label, STYLE_TAG_POS_X, STYLE_TAG_POS_Y);
 }
 
-// Clear weather icon objects
+// Create an Apple-style card widget
+// Returns the card object (caller can add children to it)
+static lv_obj_t *create_card(lv_obj_t *parent, int x, int y, int width, int height)
+{
+    lv_obj_t *card = lv_obj_create(parent);
+    lv_obj_set_size(card, width, height);
+    lv_obj_set_pos(card, x, y);
+    lv_obj_set_style_bg_color(card, lv_color_hex(COLOR_CARD_BG), 0);
+    lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(card, CARD_RADIUS, 0);
+    lv_obj_set_style_border_width(card, 0, 0);
+    lv_obj_set_style_pad_all(card, CARD_PADDING, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    return card;
+}
+
+// Calendar card storage (up to 3 events)
+#define MAX_CALENDAR_CARDS 3
+static lv_obj_t *s_calendar_cards[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
+static lv_obj_t *s_calendar_time_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
+static lv_obj_t *s_calendar_title_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
+static lv_obj_t *s_calendar_location_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
+
+// Clear weather icon objects and card
 static void clear_weather_icons(void)
 {
     for (int i = 0; i < s_weather_icon_count; i++) {
@@ -1689,6 +1735,23 @@ static void clear_weather_icons(void)
         }
     }
     s_weather_icon_count = 0;
+    if (s_weather_card) lv_obj_add_flag(s_weather_card, LV_OBJ_FLAG_HIDDEN);
+    if (s_weather_desc_label) lv_obj_add_flag(s_weather_desc_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+// Clear calendar cards (deletes the card objects and their children)
+static void clear_calendar_cards(void)
+{
+    for (int i = 0; i < MAX_CALENDAR_CARDS; i++) {
+        if (s_calendar_cards[i]) {
+            lv_obj_delete(s_calendar_cards[i]);
+            s_calendar_cards[i] = NULL;
+        }
+        // Labels are children of cards, so they get deleted automatically
+        s_calendar_time_labels[i] = NULL;
+        s_calendar_title_labels[i] = NULL;
+        s_calendar_location_labels[i] = NULL;
+    }
 }
 
 // Clear animation particles
@@ -1740,8 +1803,11 @@ static void hide_all_screen_elements(void)
 
     // Hide clock elements
     if (s_clock_ampm_label) lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_clock_date_label) lv_obj_add_flag(s_clock_date_label, LV_OBJ_FLAG_HIDDEN);
+    if (s_clock_card) lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
 
     // Hide subway elements
+    if (s_subway_card) lv_obj_add_flag(s_subway_card, LV_OBJ_FLAG_HIDDEN);
     if (s_subway_circle) lv_obj_add_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
     if (s_subway_line_label) lv_obj_add_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
     if (s_subway_station_label) lv_obj_add_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
@@ -1755,84 +1821,92 @@ static void hide_all_screen_elements(void)
     // Clear dynamic elements
     clear_weather_icons();
     clear_particles();
+    clear_calendar_cards();
 }
 
-// Draw sun icon (circle + dots around it)
+// Draw sun icon (circle + rays around it) - Apple Weather style
 static void draw_sun_icon(int cx, int cy, int radius)
 {
     lv_obj_t *scr = lv_scr_act();
 
-    // Sun circle (main body)
+    // Sun circle (main body) - bright yellow
     lv_obj_t *sun = lv_obj_create(scr);
     lv_obj_remove_style_all(sun);
     lv_obj_set_size(sun, radius * 2, radius * 2);
     lv_obj_set_pos(sun, cx - radius, cy - radius);
-    lv_obj_set_style_bg_color(sun, lv_color_hex(STYLE_ACCENT_COLOR), 0);  // Gold
+    lv_obj_set_style_bg_color(sun, lv_color_hex(COLOR_ACCENT_YELLOW), 0);  // Apple yellow
     lv_obj_set_style_bg_opa(sun, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(sun, LV_RADIUS_CIRCLE, 0);
     s_weather_icon_objs[s_weather_icon_count++] = sun;
 
-    // Sun rays as dots (8 circles around the sun)
-    int dot_size = 12;  // Diameter of each ray dot
-    int ray_dist = radius + 18;  // Distance from center to ray dots
+    // Sun rays as small dots (8 around the sun) - simple and efficient
+    int ray_size = 12;
+    int ray_dist = radius + 16;
     for (int i = 0; i < 8 && s_weather_icon_count < 10; i++) {
         float angle = i * 3.14159f / 4.0f;
-        int rx = cx + (int)(cosf(angle) * ray_dist) - dot_size / 2;
-        int ry = cy + (int)(sinf(angle) * ray_dist) - dot_size / 2;
+        int rx = cx + (int)(cosf(angle) * ray_dist);
+        int ry = cy + (int)(sinf(angle) * ray_dist);
 
-        lv_obj_t *dot = lv_obj_create(scr);
-        lv_obj_remove_style_all(dot);
-        lv_obj_set_size(dot, dot_size, dot_size);
-        lv_obj_set_pos(dot, rx, ry);
-        lv_obj_set_style_bg_color(dot, lv_color_hex(STYLE_ACCENT_COLOR), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);  // Make it circular
-        s_weather_icon_objs[s_weather_icon_count++] = dot;
+        lv_obj_t *ray = lv_obj_create(scr);
+        lv_obj_remove_style_all(ray);
+        lv_obj_set_size(ray, ray_size, ray_size);
+        lv_obj_set_pos(ray, rx - ray_size / 2, ry - ray_size / 2);
+        lv_obj_set_style_bg_color(ray, lv_color_hex(COLOR_ACCENT_YELLOW), 0);
+        lv_obj_set_style_bg_opa(ray, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(ray, LV_RADIUS_CIRCLE, 0);  // Dots, not rectangles
+        s_weather_icon_objs[s_weather_icon_count++] = ray;
     }
 }
 
-// Draw cloud icon (overlapping circles)
+// Draw cloud icon (simple overlapping circles)
 static void draw_cloud_icon(int cx, int cy, int size, uint32_t color)
 {
     lv_obj_t *scr = lv_scr_act();
 
-    // Cloud made of overlapping circles
-    int positions[][3] = {
-        {-size/2, 0, size/2},      // Left
-        {size/2, 0, size/2},       // Right
-        {0, -size/4, size*2/3},    // Top center (larger)
-        {-size/4, size/4, size/3}, // Bottom left
-        {size/4, size/4, size/3},  // Bottom right
+    // Cloud made of 3 overlapping circles - simple and clean
+    int circles[][3] = {
+        {-size/2, 0, size * 3/4},    // Left circle
+        {0, -size/4, size},          // Center circle (larger, higher)
+        {size/2, 0, size * 2/3},     // Right circle
     };
 
-    for (int i = 0; i < 5 && s_weather_icon_count < 10; i++) {
-        lv_obj_t *part = lv_obj_create(scr);
-        lv_obj_remove_style_all(part);
-        int r = positions[i][2];
-        lv_obj_set_size(part, r * 2, r * 2);
-        lv_obj_set_pos(part, cx + positions[i][0] - r, cy + positions[i][1] - r);
-        lv_obj_set_style_bg_color(part, lv_color_hex(color), 0);
-        lv_obj_set_style_bg_opa(part, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(part, LV_RADIUS_CIRCLE, 0);
-        s_weather_icon_objs[s_weather_icon_count++] = part;
+    for (int i = 0; i < 3 && s_weather_icon_count < 10; i++) {
+        lv_obj_t *c = lv_obj_create(scr);
+        lv_obj_remove_style_all(c);
+        int r = circles[i][2] / 2;
+        lv_obj_set_size(c, r * 2, r * 2);
+        lv_obj_set_pos(c, cx + circles[i][0] - r, cy + circles[i][1] - r);
+        lv_obj_set_style_bg_color(c, lv_color_hex(color), 0);
+        lv_obj_set_style_bg_opa(c, LV_OPA_COVER, 0);
+        lv_obj_set_style_radius(c, LV_RADIUS_CIRCLE, 0);
+        s_weather_icon_objs[s_weather_icon_count++] = c;
     }
 }
 
-// Draw rain drops
+// Draw rain drops (simple rounded rectangles)
 static void draw_rain_drops(int cx, int cy, int spread)
 {
     lv_obj_t *scr = lv_scr_act();
 
-    // 3 rain drops
+    // Rain drop positions (offset_x, offset_y)
+    int drops[][2] = {
+        {-spread, 0},     // Left
+        {0, 15},          // Center (lower)
+        {spread, 5},      // Right (middle height)
+    };
+
+    // Simple rounded rectangle drops
     for (int i = 0; i < 3 && s_weather_icon_count < 10; i++) {
+        int dx = drops[i][0];
+        int dy = drops[i][1];
+
         lv_obj_t *drop = lv_obj_create(scr);
         lv_obj_remove_style_all(drop);
-        lv_obj_set_size(drop, 6, 20);
-        int dx = (i - 1) * spread;
-        lv_obj_set_pos(drop, cx + dx - 3, cy + i * 10);
-        lv_obj_set_style_bg_color(drop, lv_color_hex(COLOR_SKYBLUE), 0);  // Sky blue (weather)
+        lv_obj_set_size(drop, 8, 22);
+        lv_obj_set_pos(drop, cx + dx - 4, cy + dy);
+        lv_obj_set_style_bg_color(drop, lv_color_hex(COLOR_ACCENT_BLUE), 0);
         lv_obj_set_style_bg_opa(drop, LV_OPA_COVER, 0);
-        lv_obj_set_style_radius(drop, 3, 0);
+        lv_obj_set_style_radius(drop, 4, 0);  // Rounded ends
         s_weather_icon_objs[s_weather_icon_count++] = drop;
     }
 }
@@ -1868,38 +1942,43 @@ void face_renderer_show_weather(const char *temp, weather_icon_t icon,
             // Hide ALL other screen elements first
             hide_all_screen_elements();
 
-            // Draw weather icon in upper portion
-            int icon_cx = s_renderer.width / 2;
-            int icon_cy = s_renderer.height / 3;
+            lv_obj_t *scr = lv_scr_act();
+            int center_x = s_renderer.width / 2;
+            int center_y = s_renderer.height / 2;
+
+            // Hide card (not needed for simple layout)
+            if (s_weather_card) {
+                lv_obj_add_flag(s_weather_card, LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // Draw weather icon centered, above middle
+            int icon_cy = center_y - 80;
 
             switch (icon) {
                 case WEATHER_ICON_SUNNY:
-                    draw_sun_icon(icon_cx, icon_cy, 50);
+                    draw_sun_icon(center_x, icon_cy, 45);
                     break;
                 case WEATHER_ICON_CLOUDY:
                 case WEATHER_ICON_PARTLY_CLOUDY:
-                    draw_cloud_icon(icon_cx, icon_cy, 60, 0xB0BEC5);  // Gray cloud
+                    draw_cloud_icon(center_x, icon_cy, 50, 0xB0BEC5);  // Gray cloud
                     break;
                 case WEATHER_ICON_RAINY:
                 case WEATHER_ICON_STORMY:
-                    draw_cloud_icon(icon_cx, icon_cy - 20, 50, 0x78909C);  // Dark gray
-                    draw_rain_drops(icon_cx, icon_cy + 10, 25);  // Closer to cloud
+                    draw_cloud_icon(center_x, icon_cy - 15, 45, 0x78909C);  // Dark gray
+                    draw_rain_drops(center_x, icon_cy + 10, 20);
                     break;
                 case WEATHER_ICON_SNOWY:
-                    draw_cloud_icon(icon_cx, icon_cy - 20, 50, 0xCFD8DC);  // Light gray
-                    draw_snowflakes(icon_cx, icon_cy + 15, 30);  // Closer to cloud
+                    draw_cloud_icon(center_x, icon_cy - 15, 45, 0xCFD8DC);  // Light gray
+                    draw_snowflakes(center_x, icon_cy + 10, 25);
                     break;
                 case WEATHER_ICON_FOGGY:
-                    draw_cloud_icon(icon_cx, icon_cy, 60, 0x9E9E9E);  // Gray fog
+                    draw_cloud_icon(center_x, icon_cy, 50, 0x9E9E9E);  // Gray fog
                     break;
                 default:
                     break;
             }
 
-            // Show "Weather" tag in top-left
-            show_screen_tag("Weather");
-
-            // Temperature - large centered text below icon
+            // Temperature - large white text, centered
             lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_renderer.text_label, temp);
 #ifdef SIMULATOR
@@ -1907,21 +1986,34 @@ void face_renderer_show_weather(const char *temp, weather_icon_t icon,
 #else
             lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_48, 0);
 #endif
-            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(STYLE_PRIMARY_TEXT), 0);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(COLOR_TEXT_PRIMARY), 0);
             lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
-            // Reset any scale transform from clock
-            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);  // 256 = 1.0x normal
+            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);
             lv_obj_set_style_transform_scale_y(s_renderer.text_label, 256, 0);
             lv_obj_set_width(s_renderer.text_label, s_renderer.width);
-            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, 50);
+            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, 30);
 
-            // Description below temperature (if provided) - not used for now, keeping simple
+            // Description label - gray secondary text below temperature
+            if (!s_weather_desc_label) {
+                s_weather_desc_label = lv_label_create(scr);
+            }
+            if (description && description[0]) {
+                lv_obj_clear_flag(s_weather_desc_label, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_text(s_weather_desc_label, description);
+                lv_obj_set_style_text_color(s_weather_desc_label, lv_color_hex(COLOR_TEXT_SECONDARY), 0);
+                lv_obj_set_style_text_font(s_weather_desc_label, &lv_font_montserrat_28, 0);
+                lv_obj_set_style_text_align(s_weather_desc_label, LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(s_weather_desc_label, s_renderer.width);
+                lv_obj_align(s_weather_desc_label, LV_ALIGN_CENTER, 0, 110);
+            } else {
+                lv_obj_add_flag(s_weather_desc_label, LV_OBJ_FLAG_HIDDEN);
+            }
 
             bsp_display_unlock();
         }
 
         xSemaphoreGive(s_renderer.mutex);
-        ESP_LOGI(TAG, "Weather display: %s, icon=%d", temp, icon);
+        ESP_LOGI(TAG, "Weather display: %s, icon=%d, desc=%s", temp, icon, description ? description : "none");
     }
 }
 
@@ -1963,7 +2055,7 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
             lv_obj_set_size(s_timer_arc, arc_radius * 2, arc_radius * 2);
             lv_obj_set_style_arc_width(s_timer_arc, arc_width, LV_PART_MAIN);
             lv_obj_set_style_arc_width(s_timer_arc, arc_width, LV_PART_INDICATOR);
-            lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(COLOR_DEEPSEA), LV_PART_MAIN);  // Deep sea background
+            lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(COLOR_CARD_BG), LV_PART_MAIN);  // Dark card background
             lv_obj_align(s_timer_arc, LV_ALIGN_CENTER, 0, -30);
             lv_obj_clear_flag(s_timer_arc, LV_OBJ_FLAG_HIDDEN);
 
@@ -1975,12 +2067,12 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
             }
             lv_arc_set_angles(s_timer_arc, 0, arc_angle);
 
-            // Arc color based on state - use moss green for focus timer
-            uint32_t arc_color = COLOR_MOSS;  // Moss green for progress bar
+            // Arc color based on state - use Apple green for focus timer
+            uint32_t arc_color = COLOR_ACCENT_GREEN;  // Apple system green for progress
             if (current_seconds <= 30 && current_seconds > 10 && is_running) {
-                arc_color = COLOR_TERRACOTTA;  // Terracotta when getting low
+                arc_color = COLOR_ACCENT_ORANGE;  // Apple orange when getting low
             } else if (current_seconds <= 10 && is_running) {
-                arc_color = COLOR_REDWINE;  // Red wine when very low
+                arc_color = COLOR_ACCENT_RED;  // Apple red when very low
             }
             lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(arc_color), LV_PART_INDICATOR);
 
@@ -2053,13 +2145,13 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
             lv_obj_align(s_timer_btn_pause, LV_ALIGN_BOTTOM_MID, 60, -25);
             lv_obj_clear_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
 
-            // Update button states based on running
+            // Update button states based on running - Apple Watch style
             if (is_running) {
-                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
-                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_WARN), 0);
+                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(COLOR_CARD_BG), 0);  // Dark inactive
+                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(COLOR_ACCENT_ORANGE), 0);  // Orange pause
             } else {
-                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_ACTIVE), 0);
-                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
+                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(COLOR_ACCENT_GREEN), 0);  // Green start
+                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(COLOR_CARD_BG), 0);  // Dark inactive
             }
 
             bsp_display_unlock();
@@ -2118,7 +2210,7 @@ static void timer_btn_pause_click_cb(lv_event_t *e)
     }
 }
 
-void face_renderer_show_clock(int hours, int minutes, bool is_24h)
+void face_renderer_show_clock(int hours, int minutes, bool is_24h, const char *date_str)
 {
     if (!s_renderer.initialized) return;
 
@@ -2126,12 +2218,12 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h)
         s_renderer.mode = DISPLAY_MODE_CLOCK;
 
         if (bsp_display_lock(100)) {
-            // Hide ALL other screen elements first
             hide_all_screen_elements();
 
             lv_obj_t *scr = lv_scr_act();
+            int center_y = s_renderer.height / 2;
 
-            // Format time - just hours:minutes in huge font
+            // Format time
             char time_text[32];
             int display_hours = hours;
             if (!is_24h) {
@@ -2140,26 +2232,43 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h)
             }
             snprintf(time_text, sizeof(time_text), "%d:%02d", display_hours, minutes);
 
-            // Show "Clock" tag in top-left
-            show_screen_tag("Clock");
+            // Hide card (not needed for simple layout)
+            if (s_clock_card) {
+                lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
+            }
 
-            // Main time display - use largest font, centered properly
+            // Date label at top (orange accent)
+            if (!s_clock_date_label) {
+                s_clock_date_label = lv_label_create(scr);
+            }
+            if (date_str && date_str[0]) {
+                lv_obj_clear_flag(s_clock_date_label, LV_OBJ_FLAG_HIDDEN);
+                lv_label_set_text(s_clock_date_label, date_str);
+                lv_obj_set_style_text_color(s_clock_date_label, lv_color_hex(COLOR_ACCENT_ORANGE), 0);
+                lv_obj_set_style_text_font(s_clock_date_label, &lv_font_montserrat_28, 0);
+                lv_obj_set_style_text_align(s_clock_date_label, LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(s_clock_date_label, s_renderer.width);
+                lv_obj_align(s_clock_date_label, LV_ALIGN_CENTER, 0, -80);
+            } else {
+                lv_obj_add_flag(s_clock_date_label, LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // Main time display - large white text, centered
             lv_obj_clear_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(s_renderer.text_label, time_text);
-            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(STYLE_PRIMARY_TEXT), 0);
+            lv_obj_set_style_text_color(s_renderer.text_label, lv_color_hex(COLOR_TEXT_PRIMARY), 0);
 #ifdef SIMULATOR
             lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_64, 0);
 #else
             lv_obj_set_style_text_font(s_renderer.text_label, &lv_font_montserrat_48, 0);
 #endif
             lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
-            // Reset any scale transform (don't scale - causes pixelation)
-            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);  // 256 = 1.0x normal
+            lv_obj_set_style_transform_scale_x(s_renderer.text_label, 256, 0);
             lv_obj_set_style_transform_scale_y(s_renderer.text_label, 256, 0);
             lv_obj_set_width(s_renderer.text_label, s_renderer.width);
-            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, is_24h ? 0 : -20);
+            lv_obj_align(s_renderer.text_label, LV_ALIGN_CENTER, 0, 0);
 
-            // AM/PM label (if 12h mode)
+            // AM/PM label (below time)
             if (!s_clock_ampm_label) {
                 s_clock_ampm_label = lv_label_create(scr);
             }
@@ -2167,18 +2276,20 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h)
                 const char* ampm = hours >= 12 ? "PM" : "AM";
                 lv_obj_clear_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
                 lv_label_set_text(s_clock_ampm_label, ampm);
-                lv_obj_set_style_text_color(s_clock_ampm_label, lv_color_hex(STYLE_SECONDARY_TEXT), 0);
+                lv_obj_set_style_text_color(s_clock_ampm_label, lv_color_hex(COLOR_TEXT_SECONDARY), 0);
                 lv_obj_set_style_text_font(s_clock_ampm_label, &lv_font_montserrat_28, 0);
                 lv_obj_set_style_text_align(s_clock_ampm_label, LV_TEXT_ALIGN_CENTER, 0);
                 lv_obj_set_width(s_clock_ampm_label, s_renderer.width);
-                lv_obj_align(s_clock_ampm_label, LV_ALIGN_CENTER, 0, 40);
+                lv_obj_align(s_clock_ampm_label, LV_ALIGN_CENTER, 0, 70);
+            } else {
+                lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
             }
 
             bsp_display_unlock();
         }
 
         xSemaphoreGive(s_renderer.mutex);
-        ESP_LOGI(TAG, "Clock display: %02d:%02d (24h=%d)", hours, minutes, is_24h);
+        ESP_LOGI(TAG, "Clock display: %02d:%02d (24h=%d, date=%s)", hours, minutes, is_24h, date_str ? date_str : "none");
     }
 }
 
@@ -2197,12 +2308,33 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
 
             lv_obj_t *scr = lv_scr_act();
             int center_x = s_renderer.width / 2;
+            int center_y = s_renderer.height / 2;
 
-            // Show "Subway" tag in top-left
-            show_screen_tag("Subway");
+            // Card dimensions (Apple Watch widget style)
+            int card_width = s_renderer.width - 40;
+            int card_height = 320;
+            int card_x = 20;
+            int card_y = center_y - card_height / 2;
 
-            // Train line circle (like MTA bullet)
-            int circle_radius = 50;
+            // Create card background
+            if (!s_subway_card) {
+                s_subway_card = lv_obj_create(scr);
+                lv_obj_remove_style_all(s_subway_card);
+            }
+            lv_obj_set_size(s_subway_card, card_width, card_height);
+            lv_obj_set_pos(s_subway_card, card_x, card_y);
+            lv_obj_set_style_bg_color(s_subway_card, lv_color_hex(COLOR_CARD_BG), 0);
+            lv_obj_set_style_bg_opa(s_subway_card, LV_OPA_COVER, 0);
+            lv_obj_set_style_radius(s_subway_card, CARD_RADIUS, 0);
+            lv_obj_set_style_border_width(s_subway_card, 0, 0);
+            lv_obj_clear_flag(s_subway_card, LV_OBJ_FLAG_SCROLLABLE);
+            lv_obj_clear_flag(s_subway_card, LV_OBJ_FLAG_HIDDEN);
+
+            // Positions relative to card
+            int content_y = card_y + 25;
+
+            // Train line circle (smaller MTA bullet on left side of card)
+            int circle_radius = 30;
             if (!s_subway_circle) {
                 s_subway_circle = lv_obj_create(scr);
                 lv_obj_remove_style_all(s_subway_circle);
@@ -2211,7 +2343,7 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
             lv_obj_set_style_bg_color(s_subway_circle, lv_color_hex(line_color), 0);
             lv_obj_set_style_bg_opa(s_subway_circle, LV_OPA_COVER, 0);
             lv_obj_set_style_radius(s_subway_circle, LV_RADIUS_CIRCLE, 0);
-            lv_obj_align(s_subway_circle, LV_ALIGN_TOP_MID, 0, 50);
+            lv_obj_set_pos(s_subway_circle, card_x + 25, content_y);
             lv_obj_clear_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
 
             // Line name inside circle (e.g., "1", "A", "N")
@@ -2220,65 +2352,84 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
             }
             lv_label_set_text(s_subway_line_label, line);
             lv_obj_set_style_text_color(s_subway_line_label, lv_color_white(), 0);
-            lv_obj_set_style_text_font(s_subway_line_label, &lv_font_montserrat_48, 0);
+            lv_obj_set_style_text_font(s_subway_line_label, &lv_font_montserrat_28, 0);
             lv_obj_set_style_text_align(s_subway_line_label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_align(s_subway_line_label, LV_ALIGN_TOP_MID, 0, 50 + circle_radius - 24);
+            lv_obj_set_pos(s_subway_line_label, card_x + 25, content_y + circle_radius - 14);
+            lv_obj_set_width(s_subway_line_label, circle_radius * 2);
             lv_obj_clear_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
 
-            // Station name with direction arrow
+            // Station name and direction (right of bullet)
             char station_text[64];
-            snprintf(station_text, sizeof(station_text), "%s %s", station, direction);
+            snprintf(station_text, sizeof(station_text), "%s", station);
             if (!s_subway_station_label) {
                 s_subway_station_label = lv_label_create(scr);
             }
             lv_label_set_text(s_subway_station_label, station_text);
-            lv_obj_set_style_text_color(s_subway_station_label, lv_color_hex(STYLE_SECONDARY_TEXT), 0);
-            lv_obj_set_style_text_font(s_subway_station_label, &lv_font_montserrat_24, 0);
-            lv_obj_set_style_text_align(s_subway_station_label, LV_TEXT_ALIGN_CENTER, 0);
-            lv_obj_set_width(s_subway_station_label, s_renderer.width);
-            lv_obj_align(s_subway_station_label, LV_ALIGN_TOP_MID, 0, 50 + circle_radius * 2 + 15);
+            lv_obj_set_style_text_color(s_subway_station_label, lv_color_white(), 0);
+            lv_obj_set_style_text_font(s_subway_station_label, &lv_font_montserrat_28, 0);
+            lv_obj_set_pos(s_subway_station_label, card_x + 25 + circle_radius * 2 + 15, content_y + 5);
             lv_obj_clear_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
 
-            // Arrival times - larger first time, smaller subsequent times
-            int y_offset = 50 + circle_radius * 2 + 60;
-            for (int i = 0; i < 3; i++) {
-                if (!s_subway_time_labels[i]) {
-                    s_subway_time_labels[i] = lv_label_create(scr);
-                }
+            // Direction below station (gray text)
+            if (!s_subway_time_labels[2]) {
+                s_subway_time_labels[2] = lv_label_create(scr);
+            }
+            lv_label_set_text(s_subway_time_labels[2], direction);
+            lv_obj_set_style_text_color(s_subway_time_labels[2], lv_color_hex(COLOR_TEXT_SECONDARY), 0);
+            lv_obj_set_style_text_font(s_subway_time_labels[2], &lv_font_montserrat_20, 0);
+            lv_obj_set_pos(s_subway_time_labels[2], card_x + 25 + circle_radius * 2 + 15, content_y + 35);
+            lv_obj_clear_flag(s_subway_time_labels[2], LV_OBJ_FLAG_HIDDEN);
 
-                if (i < num_times) {
-                    char time_text[32];
-                    if (times[i] <= 0) {
-                        snprintf(time_text, sizeof(time_text), "NOW");
-                    } else if (i == 0) {
-                        // First time: just the number (large font may not have lowercase)
-                        snprintf(time_text, sizeof(time_text), "%d MIN", times[i]);
-                    } else if (times[i] == 1) {
-                        snprintf(time_text, sizeof(time_text), "1 min");
-                    } else {
-                        snprintf(time_text, sizeof(time_text), "%d min", times[i]);
-                    }
-                    lv_label_set_text(s_subway_time_labels[i], time_text);
+            // Arrival times - prominently displayed in center/bottom of card
+            int time_y = content_y + 95;
 
-                    // First time is large and white, others are smaller and sand colored
-                    if (i == 0) {
-                        lv_obj_set_style_text_font(s_subway_time_labels[i], &lv_font_montserrat_48, 0);
-                        lv_obj_set_style_text_color(s_subway_time_labels[i], lv_color_white(), 0);
-                    } else {
-                        lv_obj_set_style_text_font(s_subway_time_labels[i], &lv_font_montserrat_28, 0);
-                        lv_obj_set_style_text_color(s_subway_time_labels[i], lv_color_hex(STYLE_SECONDARY_TEXT), 0);
-                    }
-
-                    lv_obj_set_style_text_align(s_subway_time_labels[i], LV_TEXT_ALIGN_CENTER, 0);
-                    lv_obj_set_width(s_subway_time_labels[i], s_renderer.width);
-                    lv_obj_align(s_subway_time_labels[i], LV_ALIGN_TOP_MID, 0, y_offset);
-                    lv_obj_clear_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
-
-                    // Spacing between times
-                    y_offset += (i == 0) ? 60 : 35;
+            // First arrival time - large and prominent with "min" using 48pt (has lowercase)
+            if (!s_subway_time_labels[0]) {
+                s_subway_time_labels[0] = lv_label_create(scr);
+            }
+            char time_text[32];
+            if (num_times > 0) {
+                if (times[0] <= 0) {
+                    snprintf(time_text, sizeof(time_text), "NOW");
                 } else {
-                    lv_obj_add_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+                    snprintf(time_text, sizeof(time_text), "%d min", times[0]);  // Include "min"
                 }
+                lv_label_set_text(s_subway_time_labels[0], time_text);
+                lv_obj_set_style_text_font(s_subway_time_labels[0], &lv_font_montserrat_48, 0);  // 48pt has lowercase
+                lv_obj_set_style_text_color(s_subway_time_labels[0], lv_color_white(), 0);
+                lv_obj_set_style_text_align(s_subway_time_labels[0], LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(s_subway_time_labels[0], card_width);
+                lv_obj_set_pos(s_subway_time_labels[0], card_x, time_y);
+                lv_obj_clear_flag(s_subway_time_labels[0], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_subway_time_labels[0], LV_OBJ_FLAG_HIDDEN);
+            }
+
+            // Following arrivals (smaller, below main time)
+            if (!s_subway_time_labels[1]) {
+                s_subway_time_labels[1] = lv_label_create(scr);
+            }
+            if (num_times > 1) {
+                char next_times[64] = "";
+                for (int i = 1; i < num_times && i < 3; i++) {
+                    char buf[16];
+                    if (times[i] <= 0) {
+                        snprintf(buf, sizeof(buf), "NOW");
+                    } else {
+                        snprintf(buf, sizeof(buf), "%d min", times[i]);
+                    }
+                    if (i > 1) strcat(next_times, "  •  ");
+                    strcat(next_times, buf);
+                }
+                lv_label_set_text(s_subway_time_labels[1], next_times);
+                lv_obj_set_style_text_font(s_subway_time_labels[1], &lv_font_montserrat_24, 0);
+                lv_obj_set_style_text_color(s_subway_time_labels[1], lv_color_hex(COLOR_TEXT_SECONDARY), 0);
+                lv_obj_set_style_text_align(s_subway_time_labels[1], LV_TEXT_ALIGN_CENTER, 0);
+                lv_obj_set_width(s_subway_time_labels[1], card_width);
+                lv_obj_set_pos(s_subway_time_labels[1], card_x, time_y + 80);
+                lv_obj_clear_flag(s_subway_time_labels[1], LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(s_subway_time_labels[1], LV_OBJ_FLAG_HIDDEN);
             }
 
             bsp_display_unlock();
@@ -2287,6 +2438,69 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Subway display: %s line at %s %s, %d arrivals",
                  line, station, direction, num_times);
+    }
+}
+
+void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
+{
+    if (!s_renderer.initialized || !events) return;
+    if (num_events < 1) num_events = 1;
+    if (num_events > MAX_CALENDAR_CARDS) num_events = MAX_CALENDAR_CARDS;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.mode = DISPLAY_MODE_CALENDAR;
+
+        if (bsp_display_lock(100)) {
+            hide_all_screen_elements();
+
+            lv_obj_t *scr = lv_scr_act();
+
+            // Card dimensions - Apple Watch style
+            int card_width = s_renderer.width - 40;  // 20px margin each side
+            int card_height = (num_events == 1) ? 180 :
+                              (num_events == 2) ? 130 : 100;  // Adjust height based on count
+            int card_spacing = 12;
+            int start_y = 30;  // Start below top
+
+            for (int i = 0; i < num_events; i++) {
+                // Create card container
+                int card_y = start_y + i * (card_height + card_spacing);
+                s_calendar_cards[i] = create_card(scr, 20, card_y, card_width, card_height);
+
+                // Time label (blue accent at top of card)
+                s_calendar_time_labels[i] = lv_label_create(s_calendar_cards[i]);
+                lv_label_set_text(s_calendar_time_labels[i], events[i].time_str);
+                lv_obj_set_style_text_color(s_calendar_time_labels[i], lv_color_hex(COLOR_ACCENT_BLUE), 0);
+                lv_obj_set_style_text_font(s_calendar_time_labels[i], &lv_font_montserrat_20, 0);
+                lv_obj_align(s_calendar_time_labels[i], LV_ALIGN_TOP_LEFT, 0, 0);
+
+                // Title label (white, bold - using larger font)
+                s_calendar_title_labels[i] = lv_label_create(s_calendar_cards[i]);
+                lv_label_set_text(s_calendar_title_labels[i], events[i].title);
+                lv_obj_set_style_text_color(s_calendar_title_labels[i], lv_color_hex(COLOR_TEXT_PRIMARY), 0);
+                lv_obj_set_style_text_font(s_calendar_title_labels[i], &lv_font_montserrat_28, 0);
+                lv_obj_set_width(s_calendar_title_labels[i], card_width - 2 * CARD_PADDING);
+                lv_label_set_long_mode(s_calendar_title_labels[i], LV_LABEL_LONG_WRAP);
+                lv_obj_align(s_calendar_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 26);
+
+                // Location label (gray secondary text, if provided)
+                if (events[i].location[0] != '\0') {
+                    s_calendar_location_labels[i] = lv_label_create(s_calendar_cards[i]);
+                    lv_label_set_text(s_calendar_location_labels[i], events[i].location);
+                    lv_obj_set_style_text_color(s_calendar_location_labels[i], lv_color_hex(COLOR_TEXT_SECONDARY), 0);
+                    lv_obj_set_style_text_font(s_calendar_location_labels[i], &lv_font_montserrat_20, 0);
+                    lv_obj_set_width(s_calendar_location_labels[i], card_width - 2 * CARD_PADDING);
+                    lv_label_set_long_mode(s_calendar_location_labels[i], LV_LABEL_LONG_DOT);
+                    lv_obj_align(s_calendar_location_labels[i], LV_ALIGN_TOP_LEFT, 0,
+                                 num_events == 1 ? 70 : 58);
+                }
+            }
+
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Calendar display: %d events", num_events);
     }
 }
 

@@ -268,7 +268,8 @@ static void handle_luna_command(const luna_cmd_t* cmd)
             face_renderer_show_clock(
                 cmd->data.clock.hours,
                 cmd->data.clock.minutes,
-                cmd->data.clock.is_24h
+                cmd->data.clock.is_24h,
+                NULL  // date_str can be added to protocol if needed
             );
             break;
 
@@ -437,8 +438,14 @@ static void update_demo_mode(void)
                 time_t t = time(NULL);
                 struct tm* tm_info = localtime(&t);
 
-                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false);
-                printf("Demo: Clock -> %d:%02d\n", tm_info->tm_hour, tm_info->tm_min);
+                // Format date string for demo
+                char demo_date[32];
+                strftime(demo_date, sizeof(demo_date), "%a %b %d", tm_info);
+                for (int i = 0; demo_date[i]; i++) {
+                    if (demo_date[i] >= 'a' && demo_date[i] <= 'z') demo_date[i] -= 32;
+                }
+                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false, demo_date);
+                printf("Demo: Clock -> %d:%02d (%s)\n", tm_info->tm_hour, tm_info->tm_min, demo_date);
 
                 g_demo_sub_state++;
                 if (g_demo_sub_state >= 5) {  /* Show clock for 5 seconds */
@@ -558,8 +565,17 @@ static void keyboard_handler(int key)
             {
                 time_t t = time(NULL);
                 struct tm* tm_info = localtime(&t);
-                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false);
-                printf("Manual: Clock mode -> %d:%02d\n", tm_info->tm_hour, tm_info->tm_min);
+                // Format date string: "TUE JAN 21"
+                char date_str[32];
+                strftime(date_str, sizeof(date_str), "%a %b %d", tm_info);
+                // Convert to uppercase for Apple Watch style
+                for (int i = 0; date_str[i]; i++) {
+                    if (date_str[i] >= 'a' && date_str[i] <= 'z') {
+                        date_str[i] -= 32;
+                    }
+                }
+                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false, date_str);
+                printf("Manual: Clock mode -> %d:%02d (%s)\n", tm_info->tm_hour, tm_info->tm_min, date_str);
             }
             break;
 
@@ -640,6 +656,59 @@ static void keyboard_handler(int key)
             }
             break;
 
+        /* G = Calendar mode (Apple Watch style cards) */
+        case SDLK_g:
+            g_demo_mode = false;
+            {
+                static int cal_demo_state = 0;
+                calendar_event_t demo_events[3];
+
+                /* Demo scenarios */
+                switch (cal_demo_state) {
+                    case 0:
+                        /* Two events */
+                        strncpy(demo_events[0].time_str, "10:00-11:00 AM", sizeof(demo_events[0].time_str));
+                        strncpy(demo_events[0].title, "Dentist Appointment", sizeof(demo_events[0].title));
+                        strncpy(demo_events[0].location, "Smile Dentist, 123 Main St", sizeof(demo_events[0].location));
+
+                        strncpy(demo_events[1].time_str, "1:00-2:30 PM", sizeof(demo_events[1].time_str));
+                        strncpy(demo_events[1].title, "Lunch with Paola", sizeof(demo_events[1].title));
+                        demo_events[1].location[0] = '\0';
+
+                        face_renderer_show_calendar(demo_events, 2);
+                        printf("Manual: Calendar -> 2 events\n");
+                        break;
+                    case 1:
+                        /* Single event */
+                        strncpy(demo_events[0].time_str, "3:00-4:00 PM", sizeof(demo_events[0].time_str));
+                        strncpy(demo_events[0].title, "Team Standup", sizeof(demo_events[0].title));
+                        strncpy(demo_events[0].location, "Conference Room B", sizeof(demo_events[0].location));
+
+                        face_renderer_show_calendar(demo_events, 1);
+                        printf("Manual: Calendar -> 1 event\n");
+                        break;
+                    case 2:
+                        /* Three events */
+                        strncpy(demo_events[0].time_str, "9:00 AM", sizeof(demo_events[0].time_str));
+                        strncpy(demo_events[0].title, "Morning Run", sizeof(demo_events[0].title));
+                        demo_events[0].location[0] = '\0';
+
+                        strncpy(demo_events[1].time_str, "11:30 AM", sizeof(demo_events[1].time_str));
+                        strncpy(demo_events[1].title, "Code Review", sizeof(demo_events[1].title));
+                        strncpy(demo_events[1].location, "Zoom", sizeof(demo_events[1].location));
+
+                        strncpy(demo_events[2].time_str, "6:00 PM", sizeof(demo_events[2].time_str));
+                        strncpy(demo_events[2].title, "Dinner", sizeof(demo_events[2].title));
+                        strncpy(demo_events[2].location, "Italian Place", sizeof(demo_events[2].location));
+
+                        face_renderer_show_calendar(demo_events, 3);
+                        printf("Manual: Calendar -> 3 events\n");
+                        break;
+                }
+                cal_demo_state = (cal_demo_state + 1) % 3;
+            }
+            break;
+
         /* Space = Toggle demo mode */
         case SDLK_SPACE:
             g_demo_mode = !g_demo_mode;
@@ -707,6 +776,7 @@ static void keyboard_handler(int key)
             printf("  R    : Reset timer to 25:00\n");
             printf("A      : Animation mode\n");
             printf("M      : Subway/MTA mode (demo: 1 train at 110 St)\n");
+            printf("G      : Calendar mode (cycles through demo events)\n");
             printf("B      : Force blink\n");
             printf("D      : Trigger dizzy effect (or move window rapidly)\n");
             printf("SPACE  : Toggle demo mode\n");

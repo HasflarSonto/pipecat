@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
@@ -166,29 +167,127 @@ void app_main(void)
     };
     static const int emotion_count = sizeof(emotion_names) / sizeof(emotion_names[0]);
     int emotion_index = 0;
-    int emotion_cycle_counter = 0;
+    int demo_counter = 0;
     int disconnect_grace_counter = 0;  // Grace period before entering demo mode
     #define DISCONNECT_GRACE_PERIOD 10  // 10 seconds before demo mode activates
+
+    // Demo display cycle state
+    typedef enum {
+        DEMO_FACE,
+        DEMO_CLOCK,
+        DEMO_WEATHER,
+        DEMO_TIMER,
+        DEMO_ANIMATION,
+    } demo_state_t;
+    demo_state_t demo_state = DEMO_FACE;
+    int demo_display_counter = 0;  // Counter for each display mode
+    int timer_seconds = 25 * 60;   // 25 minute pomodoro timer
 
     // Main loop - just keep running
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(1000));
 
-        // Emotion cycling demo when not connected to server (with grace period)
+        // Demo mode when not connected to server (with grace period)
         if (!ws_client_is_connected()) {
             disconnect_grace_counter++;
             // Only enter demo mode after sustained disconnect (10 seconds)
             if (disconnect_grace_counter >= DISCONNECT_GRACE_PERIOD) {
-                if (++emotion_cycle_counter >= 3) {
-                    emotion_cycle_counter = 0;
-                    ESP_LOGI(TAG, "Demo: Setting emotion to '%s'", emotion_names[emotion_index]);
-                    face_renderer_set_emotion_str(emotion_names[emotion_index]);
-                    emotion_index = (emotion_index + 1) % emotion_count;
+                demo_display_counter++;
+
+                switch (demo_state) {
+                    case DEMO_FACE:
+                        // Cycle through emotions every 3 seconds
+                        if (demo_display_counter % 3 == 0) {
+                            ESP_LOGI(TAG, "Demo: Face emotion '%s'", emotion_names[emotion_index]);
+                            face_renderer_set_emotion_str(emotion_names[emotion_index]);
+                            emotion_index = (emotion_index + 1) % emotion_count;
+                        }
+                        // Switch to clock after showing all emotions
+                        if (demo_display_counter >= emotion_count * 3) {
+                            demo_state = DEMO_CLOCK;
+                            demo_display_counter = 0;
+                            ESP_LOGI(TAG, "Demo: Switching to CLOCK");
+                        }
+                        break;
+
+                    case DEMO_CLOCK: {
+                        // Show real time from system clock
+                        time_t now;
+                        struct tm timeinfo;
+                        time(&now);
+                        localtime_r(&now, &timeinfo);
+                        face_renderer_show_clock(timeinfo.tm_hour, timeinfo.tm_min, false);
+                        // Switch to weather after 10 seconds
+                        if (demo_display_counter >= 10) {
+                            demo_state = DEMO_WEATHER;
+                            demo_display_counter = 0;
+                            ESP_LOGI(TAG, "Demo: Switching to WEATHER");
+                        }
+                        break;
+                    }
+
+                    case DEMO_WEATHER: {
+                        // Cycle through weather conditions
+                        static const char* weather_temps[] = {"72°F", "45°F", "88°F", "32°F", "65°F"};
+                        static const weather_icon_t weather_icons[] = {
+                            WEATHER_ICON_SUNNY, WEATHER_ICON_RAINY, WEATHER_ICON_CLOUDY,
+                            WEATHER_ICON_SNOWY, WEATHER_ICON_PARTLY_CLOUDY
+                        };
+                        static const char* weather_descs[] = {"Sunny", "Rainy", "Cloudy", "Snowy", "Partly Cloudy"};
+                        int weather_idx = (demo_display_counter / 3) % 5;
+                        face_renderer_show_weather(weather_temps[weather_idx], weather_icons[weather_idx], weather_descs[weather_idx]);
+                        // Switch to timer after showing all weather
+                        if (demo_display_counter >= 15) {
+                            demo_state = DEMO_TIMER;
+                            demo_display_counter = 0;
+                            timer_seconds = 25 * 60;  // Reset to 25 minutes
+                            ESP_LOGI(TAG, "Demo: Switching to TIMER");
+                        }
+                        break;
+                    }
+
+                    case DEMO_TIMER: {
+                        // Countdown timer (fast for demo - every second counts down 10 seconds)
+                        timer_seconds -= 10;
+                        if (timer_seconds < 0) timer_seconds = 0;
+                        int mins = timer_seconds / 60;
+                        int secs = timer_seconds % 60;
+                        face_renderer_show_timer(mins, secs, "Focus", timer_seconds > 0);
+                        // Switch to animation after timer runs out or 15 seconds
+                        if (demo_display_counter >= 15 || timer_seconds <= 0) {
+                            demo_state = DEMO_ANIMATION;
+                            demo_display_counter = 0;
+                            ESP_LOGI(TAG, "Demo: Switching to ANIMATION");
+                        }
+                        break;
+                    }
+
+                    case DEMO_ANIMATION: {
+                        // Cycle through animations
+                        static const animation_type_t anims[] = {
+                            ANIMATION_RAIN, ANIMATION_SNOW, ANIMATION_STARS, ANIMATION_MATRIX
+                        };
+                        int anim_idx = (demo_display_counter / 4) % 4;
+                        face_renderer_show_animation(anims[anim_idx]);
+                        // Switch back to face after showing all animations
+                        if (demo_display_counter >= 16) {
+                            demo_state = DEMO_FACE;
+                            demo_display_counter = 0;
+                            face_renderer_clear_display();
+                            ESP_LOGI(TAG, "Demo: Switching to FACE");
+                        }
+                        break;
+                    }
                 }
             }
         } else {
             disconnect_grace_counter = 0;  // Reset grace period on connection
-            emotion_cycle_counter = 0;  // Reset counter when connected
+            demo_display_counter = 0;  // Reset counter when connected
+            demo_state = DEMO_FACE;  // Reset to face mode
+            // Make sure we're showing the face when connected
+            if (face_renderer_get_mode() != DISPLAY_MODE_FACE) {
+                face_renderer_clear_display();
+            }
         }
 
         // Periodic status logging (every 30 seconds)
