@@ -10,7 +10,10 @@ import json
 import os
 import struct
 import uuid
+from collections import deque
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any, Dict, List, Optional, TypedDict, Union
 
 import aiohttp
@@ -18,7 +21,8 @@ import uvicorn
 from google.protobuf import descriptor_pb2
 import time as time_module
 from dotenv import load_dotenv
-from fastapi import BackgroundTasks, FastAPI, Request, Response, WebSocket, WebSocketDisconnect
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
@@ -70,6 +74,128 @@ load_dotenv(override=True)
 
 # Initialize the request handler
 small_webrtc_handler = SmallWebRTCRequestHandler()
+
+
+# ============== NOTIFICATION SYSTEM ==============
+
+# API key for iOS app authentication
+LUNA_NOTIFY_API_KEY = os.environ.get("LUNA_NOTIFY_API_KEY", "dev-key-change-me")
+
+
+@dataclass
+class Notification:
+    """A notification received from the iOS app."""
+    id: str
+    app_id: str
+    app_name: str
+    title: str
+    timestamp: datetime
+    body: Optional[str] = None
+    subtitle: Optional[str] = None
+    priority: str = "normal"
+    category: Optional[str] = None
+    thread_id: Optional[str] = None
+
+
+class NotificationQueue:
+    """Thread-safe notification queue with subscriber support."""
+
+    def __init__(self, max_size: int = 50):
+        self._queue: deque[Notification] = deque(maxlen=max_size)
+        self._listeners: List[asyncio.Queue] = []
+        self._lock = asyncio.Lock()
+
+    async def add(self, notification: Notification):
+        """Add a notification and notify all listeners."""
+        async with self._lock:
+            self._queue.append(notification)
+            # Notify all listeners
+            for listener in self._listeners:
+                try:
+                    await listener.put(notification)
+                except Exception as e:
+                    logger.error(f"Failed to notify listener: {e}")
+
+    def dismiss(self, notification_id: str):
+        """Remove a notification by ID."""
+        self._queue = deque(
+            [n for n in self._queue if n.id != notification_id],
+            maxlen=self._queue.maxlen
+        )
+
+    def clear_all(self):
+        """Clear all notifications."""
+        self._queue.clear()
+
+    def get_all(self) -> List[Notification]:
+        """Get all notifications in the queue."""
+        return list(self._queue)
+
+    def get_count(self) -> int:
+        """Get the number of notifications."""
+        return len(self._queue)
+
+    def subscribe(self) -> asyncio.Queue:
+        """Subscribe to new notifications."""
+        q: asyncio.Queue = asyncio.Queue()
+        self._listeners.append(q)
+        return q
+
+    def unsubscribe(self, q: asyncio.Queue):
+        """Unsubscribe from notifications."""
+        if q in self._listeners:
+            self._listeners.remove(q)
+
+
+# Global notification queue
+notification_queue = NotificationQueue()
+
+
+# App icon mapping (bundle ID to icon name)
+APP_ICONS = {
+    "com.apple.mobilemail": "mail",
+    "com.apple.MobileSMS": "message",
+    "com.apple.mobilecal": "calendar",
+    "com.slack.Slack": "slack",
+    "com.atebits.Tweetie2": "twitter",
+    "com.burbn.instagram": "instagram",
+    "com.facebook.Messenger": "messenger",
+    "com.spotify.client": "spotify",
+    "com.google.Gmail": "gmail",
+    "com.microsoft.Office.Outlook": "outlook",
+}
+
+
+def get_app_icon(app_id: str) -> str:
+    """Map app bundle ID to icon name for display."""
+    return APP_ICONS.get(app_id, "app")
+
+
+# Pydantic models for API requests
+class NotificationRequest(BaseModel):
+    """Request body for POST /api/notify."""
+    id: str
+    app_id: str
+    app_name: str
+    title: str
+    timestamp: str
+    body: Optional[str] = None
+    subtitle: Optional[str] = None
+    priority: str = "normal"
+    category: Optional[str] = None
+    thread_id: Optional[str] = None
+
+
+class ControlRequest(BaseModel):
+    """Request body for POST /api/control."""
+    cmd: str
+    mode: Optional[str] = None
+    emotion: Optional[str] = None
+    minutes: Optional[int] = None
+    temp: Optional[str] = None
+    icon: Optional[str] = None
+    desc: Optional[str] = None
+    events: Optional[List[dict]] = None
 
 
 # ============== WAKE WORD FILTER ==============
@@ -251,6 +377,75 @@ class ESP32Session:
             "station": station,
             "direction": direction,
             "times": times
+        })
+
+    async def send_notification(self, notification: Notification):
+        """Send a notification to the ESP32 for display."""
+        await self.send_json({
+            "cmd": "notification",
+            "id": notification.id,
+            "app": notification.app_name,
+            "app_icon": get_app_icon(notification.app_id),
+            "title": notification.title,
+            "body": notification.body or "",
+            "timestamp": notification.timestamp.strftime("%I:%M %p"),
+            "priority": notification.priority
+        })
+
+    async def send_notification_dismiss(self, notification_id: str):
+        """Dismiss a notification on the ESP32."""
+        await self.send_json({
+            "cmd": "notification_dismiss",
+            "id": notification_id
+        })
+
+    async def send_mode(self, mode: str):
+        """Switch display mode on ESP32."""
+        await self.send_json({
+            "cmd": "mode",
+            "mode": mode
+        })
+
+    async def send_timer_start(self):
+        """Start the timer on ESP32."""
+        await self.send_json({"cmd": "timer_start"})
+
+    async def send_timer_pause(self):
+        """Pause the timer on ESP32."""
+        await self.send_json({"cmd": "timer_pause"})
+
+    async def send_timer_reset(self, minutes: int):
+        """Reset the timer on ESP32."""
+        await self.send_json({
+            "cmd": "timer_reset",
+            "minutes": minutes
+        })
+
+    async def send_weather(self, temp: str, icon: str, desc: str):
+        """Send weather data to ESP32."""
+        await self.send_json({
+            "cmd": "weather",
+            "temp": temp,
+            "icon": icon,
+            "desc": desc
+        })
+
+    async def send_calendar(self, events: List[dict]):
+        """Send calendar events to ESP32."""
+        await self.send_json({
+            "cmd": "calendar",
+            "events": events
+        })
+
+    async def send_clock(self):
+        """Tell ESP32 to show clock with current time."""
+        from datetime import datetime
+        now = datetime.now()
+        await self.send_json({
+            "cmd": "clock",
+            "hours": now.hour,
+            "minutes": now.minute,
+            "date": now.strftime("%a %b %d").upper()
         })
 
 
@@ -1690,6 +1885,178 @@ def create_app():
         static_dir = os.path.join(os.path.dirname(__file__), "static")
         return FileResponse(os.path.join(static_dir, "luna.html"))
 
+    # ============== NOTIFICATION & CONTROL API ==============
+
+    def verify_api_key(authorization: str) -> bool:
+        """Verify the API key from the Authorization header."""
+        if not authorization or not authorization.startswith("Bearer "):
+            return False
+        token = authorization[7:]
+        return token == LUNA_NOTIFY_API_KEY
+
+    @app.post("/api/notify")
+    async def receive_notification(
+        notification: NotificationRequest,
+        authorization: str = Header(None)
+    ):
+        """
+        Receive a notification from the iOS app.
+        Forwards to connected devices via WebSocket.
+        """
+        global current_esp32_session
+
+        # Validate API key
+        if not verify_api_key(authorization):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        # Parse timestamp
+        try:
+            timestamp = datetime.fromisoformat(notification.timestamp.replace('Z', '+00:00'))
+        except ValueError:
+            timestamp = datetime.now()
+
+        # Create notification object
+        notif = Notification(
+            id=notification.id,
+            app_id=notification.app_id,
+            app_name=notification.app_name,
+            title=notification.title,
+            body=notification.body,
+            subtitle=notification.subtitle,
+            timestamp=timestamp,
+            priority=notification.priority,
+            category=notification.category,
+            thread_id=notification.thread_id
+        )
+
+        # Add to queue
+        await notification_queue.add(notif)
+        logger.info(f"Notification received: {notification.app_name} - {notification.title}")
+
+        # Forward to connected ESP32 device
+        forwarded = False
+        if current_esp32_session and current_esp32_session.connected:
+            await current_esp32_session.send_notification(notif)
+            forwarded = True
+            logger.info(f"Notification forwarded to ESP32")
+
+        return {
+            "status": "accepted",
+            "id": notification.id,
+            "queued": True,
+            "forwarded": forwarded
+        }
+
+    @app.post("/api/control")
+    async def remote_control(
+        control: ControlRequest,
+        authorization: str = Header(None)
+    ):
+        """
+        Remote control Luna from the iOS app.
+        Supports mode switching, timer control, emotion changes, etc.
+        """
+        global current_esp32_session, face_renderer
+
+        # Validate API key
+        if not verify_api_key(authorization):
+            raise HTTPException(status_code=401, detail="Invalid API key")
+
+        cmd = control.cmd
+        forwarded = False
+
+        logger.info(f"Control command received: {cmd}")
+
+        if cmd == "mode":
+            # Switch display mode
+            mode = control.mode
+            if not mode:
+                raise HTTPException(status_code=400, detail="Missing 'mode' parameter")
+
+            valid_modes = ["face", "clock", "weather", "timer", "calendar", "subway"]
+            if mode not in valid_modes:
+                raise HTTPException(status_code=400, detail=f"Invalid mode. Valid: {valid_modes}")
+
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_mode(mode)
+                forwarded = True
+
+        elif cmd == "emotion":
+            # Set emotion
+            emotion = control.emotion
+            if not emotion:
+                raise HTTPException(status_code=400, detail="Missing 'emotion' parameter")
+
+            if emotion not in VALID_EMOTIONS:
+                raise HTTPException(status_code=400, detail=f"Invalid emotion. Valid: {VALID_EMOTIONS}")
+
+            if face_renderer:
+                face_renderer.set_emotion(emotion)
+
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_emotion(emotion)
+                forwarded = True
+
+        elif cmd == "timer_start":
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_timer_start()
+                forwarded = True
+
+        elif cmd == "timer_pause":
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_timer_pause()
+                forwarded = True
+
+        elif cmd == "timer_reset":
+            minutes = control.minutes or 25  # Default 25 minutes
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_timer_reset(minutes)
+                forwarded = True
+
+        elif cmd == "weather":
+            temp = control.temp or "72°F"
+            icon = control.icon or "sunny"
+            desc = control.desc or "Clear skies"
+
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_weather(temp, icon, desc)
+                forwarded = True
+
+        elif cmd == "calendar":
+            events = control.events or []
+
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_calendar(events)
+                forwarded = True
+
+        elif cmd == "clock":
+            if current_esp32_session and current_esp32_session.connected:
+                await current_esp32_session.send_clock()
+                forwarded = True
+
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown command: {cmd}")
+
+        return {
+            "status": "ok",
+            "forwarded": forwarded
+        }
+
+    @app.get("/api/notify/status")
+    async def notify_status():
+        """Get notification system status."""
+        global current_esp32_session
+
+        devices_connected = 0
+        if current_esp32_session and current_esp32_session.connected:
+            devices_connected = 1
+
+        return {
+            "status": "ok",
+            "devices_connected": devices_connected,
+            "queue_length": notification_queue.get_count()
+        }
+
     @app.websocket("/luna-esp32")
     async def luna_esp32_ws(websocket: WebSocket):
         """
@@ -1914,6 +2281,12 @@ if __name__ == "__main__":
     print("   ")
     print(f"   Web client: http://{local_ip}:{args.port}/luna")
     print(f"   ESP32 WebSocket: ws://{local_ip}:{args.port}/luna-esp32")
+    print("   ")
+    print("   iOS App API (for notifications & control):")
+    print(f"     POST http://{local_ip}:{args.port}/api/notify   - Receive notifications")
+    print(f"     POST http://{local_ip}:{args.port}/api/control  - Remote control")
+    print(f"     GET  http://{local_ip}:{args.port}/api/notify/status - Status")
+    print(f"   API Key: {LUNA_NOTIFY_API_KEY[:8]}... (set LUNA_NOTIFY_API_KEY env var)")
     print("   ")
     print("   Open the web URL in your browser to start talking!\n")
 
