@@ -9,10 +9,10 @@
 
 // Emotion configurations from Python luna_face_renderer.py
 static const emotion_config_t s_emotions[EMOTION_COUNT] = {
-    // EMOTION_EYES_ONLY (default - just eyes, no mouth)
+    // EMOTION_EYES_ONLY (default - just large eyes, no mouth)
     {
-        .eye_height = 60.0f,
-        .eye_width = 40.0f,
+        .eye_height = 80.0f,   // Enlarged eyes
+        .eye_width = 55.0f,    // Enlarged eyes
         .eye_openness = 1.0f,
         .mouth_curve = 0.0f,
         .mouth_open = 0.0f,

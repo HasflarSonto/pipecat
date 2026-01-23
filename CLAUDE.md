@@ -412,6 +412,7 @@ Speaker ←───── Audio Playback ←────────┘ (binary
 
 ### Display Constraints
 
+- **SPI DMA buffer limit**: LVGL buffer must stay under ~160KB to avoid SPI DMA overflow. Use `CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=200` (410×200×2 = 164KB). LVGL renders full display in multiple passes.
 - **Arc size limit**: Keep arcs ≤60px square to avoid SPI DMA overflow. Use 0-180° or 180-360° angle ranges (not custom ranges like 200-340°).
 - **Off-screen initialization**: CRITICAL - All arc/line widgets MUST be positioned off-screen at creation with `lv_obj_set_pos(widget, -100, -100)`. LVGL renders widgets at (0,0) by default before positioning, causing ghost artifacts. This applies to `mouth_arc`, `cat_arc_top`, `cat_arc_bottom`, and `whisker_lines`.
 - **Partial refresh**: LVGL dirty rectangles cause ghost artifacts on widget movement
