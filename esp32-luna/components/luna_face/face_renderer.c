@@ -68,8 +68,8 @@ static const char *TAG = "face_renderer";
 
 // Standardized UI Style
 #define STYLE_TAG_COLOR     COLOR_TEXT_SECONDARY  // Gray for top-left screen tags
-#define STYLE_TAG_POS_X     40              // Top-left tag X position (increased for screen bezel)
-#define STYLE_TAG_POS_Y     20              // Top-left tag Y position
+#define STYLE_TAG_POS_X     45              // Top-left tag X position (increased for screen bezel)
+#define STYLE_TAG_POS_Y     25              // Top-left tag Y position (increased for screen bezel)
 #define STYLE_PRIMARY_TEXT  COLOR_TEXT_PRIMARY    // Pure white for primary content
 #define STYLE_SECONDARY_TEXT COLOR_TEXT_SECONDARY // Gray for secondary info
 #define STYLE_ACCENT_COLOR  COLOR_ACCENT_BLUE     // Blue for accents/highlights
@@ -272,6 +272,13 @@ static void update_face_widgets(void);
 static float get_blink_factor(void);
 static void timer_btn_start_click_cb(lv_event_t *e);
 static void timer_btn_pause_click_cb(lv_event_t *e);
+
+// Timer state (declared early for use in render_task_func)
+static int s_timer_minutes = 25;
+static int s_timer_seconds = 0;
+static int s_timer_total_seconds_start = 25 * 60;
+static bool s_timer_running = false;
+static int64_t s_timer_last_tick = 0;
 
 static float lerp(float a, float b, float t)
 {
@@ -883,6 +890,33 @@ static void render_task_func(void *pvParameters)
                     // Artifacts will be handled by hiding widgets before showing new ones
 
                     bsp_display_unlock();
+                }
+            } else if (s_renderer.mode == DISPLAY_MODE_TIMER && s_timer_running) {
+                // Update timer countdown
+                int64_t now = esp_timer_get_time() / 1000;
+                if (s_timer_last_tick == 0) {
+                    s_timer_last_tick = now;
+                }
+
+                // Check if 1 second has passed
+                if (now - s_timer_last_tick >= 1000) {
+                    s_timer_last_tick = now;
+
+                    // Decrement timer
+                    if (s_timer_seconds > 0) {
+                        s_timer_seconds--;
+                    } else if (s_timer_minutes > 0) {
+                        s_timer_minutes--;
+                        s_timer_seconds = 59;
+                    } else {
+                        // Timer finished
+                        s_timer_running = false;
+                    }
+
+                    // Update display (release mutex first to avoid deadlock)
+                    xSemaphoreGive(s_renderer.mutex);
+                    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", s_timer_running);
+                    continue;  // Skip the xSemaphoreGive below since we already did it
                 }
             }
             xSemaphoreGive(s_renderer.mutex);
@@ -1808,14 +1842,6 @@ static lv_obj_t *s_timer_btn_start = NULL;
 static lv_obj_t *s_timer_btn_pause = NULL;
 static lv_obj_t *s_timer_btn_label_start = NULL;
 static lv_obj_t *s_timer_btn_label_pause = NULL;
-
-// Timer state (for functional countdown)
-static int s_timer_minutes = 25;
-static int s_timer_seconds = 0;
-static int s_timer_total_seconds_start = 25 * 60;  // Total at start
-static bool s_timer_running = false;
-static int64_t s_timer_last_tick = 0;
-
 // Clock AM/PM label
 static lv_obj_t *s_clock_ampm_label = NULL;
 static lv_obj_t *s_clock_date_label = NULL;
@@ -2632,17 +2658,18 @@ void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
 
             lv_obj_t *scr = lv_scr_act();
 
-            // Card dimensions - Apple Watch style
-            int card_width = s_renderer.width - 40;  // 20px margin each side
-            int card_height = (num_events == 1) ? 180 :
-                              (num_events == 2) ? 130 : 100;  // Adjust height based on count
-            int card_spacing = 12;
-            int start_y = 30;  // Start below top
+            // Card dimensions - Apple Watch style (adjusted for screen bezel)
+            int margin_x = 35;  // Increased for bezel
+            int card_width = s_renderer.width - (margin_x * 2);
+            int card_height = (num_events == 1) ? 170 :
+                              (num_events == 2) ? 120 : 95;  // Slightly smaller to fit in safe area
+            int card_spacing = 10;
+            int start_y = 45;  // Start below top (increased for bezel)
 
             for (int i = 0; i < num_events; i++) {
                 // Create card container
                 int card_y = start_y + i * (card_height + card_spacing);
-                s_calendar_cards[i] = create_card(scr, 20, card_y, card_width, card_height);
+                s_calendar_cards[i] = create_card(scr, margin_x, card_y, card_width, card_height);
 
                 // Time label (blue accent at top of card)
                 s_calendar_time_labels[i] = lv_label_create(s_calendar_cards[i]);
