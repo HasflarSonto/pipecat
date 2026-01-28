@@ -280,6 +280,14 @@ static int s_timer_total_seconds_start = 25 * 60;
 static bool s_timer_running = false;
 static int64_t s_timer_last_tick = 0;
 
+// Timer UI widgets (declared early for use in render_task_func)
+static lv_obj_t *s_timer_arc = NULL;
+static lv_obj_t *s_timer_btn_reset = NULL;
+static lv_obj_t *s_timer_btn_start = NULL;
+static lv_obj_t *s_timer_btn_pause = NULL;
+static lv_obj_t *s_timer_btn_label_start = NULL;
+static lv_obj_t *s_timer_btn_label_pause = NULL;
+
 static float lerp(float a, float b, float t)
 {
     return a + (b - a) * t;
@@ -913,10 +921,44 @@ static void render_task_func(void *pvParameters)
                         s_timer_running = false;
                     }
 
-                    // Update display (release mutex first to avoid deadlock)
-                    xSemaphoreGive(s_renderer.mutex);
-                    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", s_timer_running);
-                    continue;  // Skip the xSemaphoreGive below since we already did it
+                    // Update only the specific widgets (NOT full redraw to avoid artifacts)
+                    if (bsp_display_lock(100)) {
+                        // Update time text
+                        char timer_text[16];
+                        snprintf(timer_text, sizeof(timer_text), "%02d:%02d", s_timer_minutes, s_timer_seconds);
+                        lv_label_set_text(s_renderer.text_label, timer_text);
+
+                        // Update arc angle
+                        int current_seconds = s_timer_minutes * 60 + s_timer_seconds;
+                        int arc_angle = 0;
+                        if (s_timer_total_seconds_start > 0) {
+                            arc_angle = (current_seconds * 360) / s_timer_total_seconds_start;
+                        }
+                        if (s_timer_arc) {
+                            lv_arc_set_angles(s_timer_arc, 0, arc_angle);
+
+                            // Update arc color based on remaining time
+                            uint32_t arc_color = COLOR_ACCENT_GREEN;
+                            if (current_seconds <= 30 && current_seconds > 10) {
+                                arc_color = COLOR_ACCENT_ORANGE;
+                            } else if (current_seconds <= 10) {
+                                arc_color = COLOR_ACCENT_RED;
+                            }
+                            lv_obj_set_style_arc_color(s_timer_arc, lv_color_hex(arc_color), LV_PART_INDICATOR);
+                        }
+
+                        // Update button colors if timer finished
+                        if (!s_timer_running) {
+                            if (s_timer_btn_start) {
+                                lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(COLOR_ACCENT_GREEN), 0);
+                            }
+                            if (s_timer_btn_pause) {
+                                lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(COLOR_CARD_BG), 0);
+                            }
+                        }
+
+                        bsp_display_unlock();
+                    }
                 }
             }
             xSemaphoreGive(s_renderer.mutex);
@@ -1835,13 +1877,8 @@ static float s_particle_speed[MAX_PARTICLES];
 static animation_type_t s_current_animation = ANIMATION_RAIN;
 static bool s_animation_active = false;
 
-// Timer widgets and state
-static lv_obj_t *s_timer_arc = NULL;
+// Timer "Focus" label (other timer widgets declared at top of file)
 static lv_obj_t *s_timer_label_small = NULL;  // "Focus" label in top-left
-static lv_obj_t *s_timer_btn_start = NULL;
-static lv_obj_t *s_timer_btn_pause = NULL;
-static lv_obj_t *s_timer_btn_label_start = NULL;
-static lv_obj_t *s_timer_btn_label_pause = NULL;
 // Clock AM/PM label
 static lv_obj_t *s_clock_ampm_label = NULL;
 static lv_obj_t *s_clock_date_label = NULL;
