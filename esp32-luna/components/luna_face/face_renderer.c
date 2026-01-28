@@ -1010,19 +1010,23 @@ static void update_petting(float delta_time)
             // First touch - check if it's on an eye (eye poke)
             int which_eye = face_renderer_hit_test_eye(point.x, point.y);
             if (which_eye == 0) {
-                // Left eye poke - trigger wink animation
-                int64_t now = esp_timer_get_time() / 1000;
-                s_renderer.target_left_wink = 1.0f;
-                s_renderer.left_poke_time = now;
+                // Left eye poke - trigger wink animation (only if not already winking)
+                if (s_renderer.left_poke_time == 0 && s_renderer.left_wink < 0.1f) {
+                    int64_t now = esp_timer_get_time() / 1000;
+                    s_renderer.target_left_wink = 1.0f;
+                    s_renderer.left_poke_time = now;
+                    ESP_LOGI(TAG, "Eye poke: left eye (touch)");
+                }
                 s_renderer.touch_was_eye_poke = true;
-                ESP_LOGI(TAG, "Eye poke: left eye (touch)");
             } else if (which_eye == 1) {
-                // Right eye poke - trigger wink animation
-                int64_t now = esp_timer_get_time() / 1000;
-                s_renderer.target_right_wink = 1.0f;
-                s_renderer.right_poke_time = now;
+                // Right eye poke - trigger wink animation (only if not already winking)
+                if (s_renderer.right_poke_time == 0 && s_renderer.right_wink < 0.1f) {
+                    int64_t now = esp_timer_get_time() / 1000;
+                    s_renderer.target_right_wink = 1.0f;
+                    s_renderer.right_poke_time = now;
+                    ESP_LOGI(TAG, "Eye poke: right eye (touch)");
+                }
                 s_renderer.touch_was_eye_poke = true;
-                ESP_LOGI(TAG, "Eye poke: right eye (touch)");
             } else {
                 // Not on eye - start petting
                 s_renderer.touch_was_eye_poke = false;
