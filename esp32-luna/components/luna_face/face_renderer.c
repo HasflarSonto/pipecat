@@ -269,31 +269,18 @@ static int random_range(int min_val, int max_val)
 }
 
 // Eye click event handlers - trigger wink animation when eye is tapped
+// IMPORTANT: Use face_renderer_poke_eye() for mutex protection to avoid race conditions
 static void left_eye_click_cb(lv_event_t *e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CLICKED) {
-        // Only trigger if not already winking
-        if (s_renderer.left_poke_time == 0) {
-            int64_t now = esp_timer_get_time() / 1000;
-            s_renderer.target_left_wink = 1.0f;
-            s_renderer.left_poke_time = now;
-            ESP_LOGI(TAG, "Left eye clicked (LVGL event)");
-        }
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        face_renderer_poke_eye(0);  // Left eye - mutex-protected
     }
 }
 
 static void right_eye_click_cb(lv_event_t *e)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_CLICKED) {
-        // Only trigger if not already winking
-        if (s_renderer.right_poke_time == 0) {
-            int64_t now = esp_timer_get_time() / 1000;
-            s_renderer.target_right_wink = 1.0f;
-            s_renderer.right_poke_time = now;
-            ESP_LOGI(TAG, "Right eye clicked (LVGL event)");
-        }
+    if (lv_event_get_code(e) == LV_EVENT_CLICKED) {
+        face_renderer_poke_eye(1);  // Right eye - mutex-protected
     }
 }
 
