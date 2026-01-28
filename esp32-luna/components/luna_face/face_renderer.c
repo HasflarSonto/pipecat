@@ -2287,14 +2287,14 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
             lv_obj_set_style_text_font(s_timer_label_small, &lv_font_montserrat_20, 0);
             lv_obj_set_pos(s_timer_label_small, STYLE_TAG_POS_X, STYLE_TAG_POS_Y);
 
-            // Create Start button
+            // Create Start button - larger, rounder, pushed to left edge
             if (!s_timer_btn_start) {
                 s_timer_btn_start = lv_obj_create(scr);
                 lv_obj_remove_style_all(s_timer_btn_start);
-                lv_obj_set_size(s_timer_btn_start, 100, 45);
+                lv_obj_set_size(s_timer_btn_start, 130, 55);
                 lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(STYLE_BUTTON_ACTIVE), 0);
                 lv_obj_set_style_bg_opa(s_timer_btn_start, LV_OPA_COVER, 0);
-                lv_obj_set_style_radius(s_timer_btn_start, 22, 0);
+                lv_obj_set_style_radius(s_timer_btn_start, 27, 0);  // Rounder to match screen fillet
 
                 // Make button clickable and register event callback
                 lv_obj_add_flag(s_timer_btn_start, LV_OBJ_FLAG_CLICKABLE);
@@ -2306,17 +2306,17 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
                 lv_obj_set_style_text_font(s_timer_btn_label_start, &lv_font_montserrat_20, 0);
                 lv_obj_center(s_timer_btn_label_start);
             }
-            lv_obj_align(s_timer_btn_start, LV_ALIGN_BOTTOM_MID, -60, -25);
+            lv_obj_align(s_timer_btn_start, LV_ALIGN_BOTTOM_LEFT, 35, -30);
             lv_obj_clear_flag(s_timer_btn_start, LV_OBJ_FLAG_HIDDEN);
 
-            // Create Pause button
+            // Create Pause button - larger, rounder, pushed to right edge
             if (!s_timer_btn_pause) {
                 s_timer_btn_pause = lv_obj_create(scr);
                 lv_obj_remove_style_all(s_timer_btn_pause);
-                lv_obj_set_size(s_timer_btn_pause, 100, 45);
+                lv_obj_set_size(s_timer_btn_pause, 130, 55);
                 lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(STYLE_BUTTON_INACTIVE), 0);
                 lv_obj_set_style_bg_opa(s_timer_btn_pause, LV_OPA_COVER, 0);
-                lv_obj_set_style_radius(s_timer_btn_pause, 22, 0);
+                lv_obj_set_style_radius(s_timer_btn_pause, 27, 0);  // Rounder to match screen fillet
 
                 // Make button clickable and register event callback
                 lv_obj_add_flag(s_timer_btn_pause, LV_OBJ_FLAG_CLICKABLE);
@@ -2328,7 +2328,7 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
                 lv_obj_set_style_text_font(s_timer_btn_label_pause, &lv_font_montserrat_20, 0);
                 lv_obj_center(s_timer_btn_label_pause);
             }
-            lv_obj_align(s_timer_btn_pause, LV_ALIGN_BOTTOM_MID, 60, -25);
+            lv_obj_align(s_timer_btn_pause, LV_ALIGN_BOTTOM_RIGHT, -35, -30);
             lv_obj_clear_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
 
             // Update button states based on running - Apple Watch style
