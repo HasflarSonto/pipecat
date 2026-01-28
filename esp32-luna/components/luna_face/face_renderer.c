@@ -624,9 +624,35 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
         if (curve_category == -100) {
-            // Eyes only - no mouth, hide the background too
-            lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
-            ESP_LOGI(TAG, "Eyes only mode - mouth hidden");
+            // Eyes only - show 人 (ren) style mouth: two quarter arcs meeting at bottom
+            // Like 人 character - meet at bottom, curve up and outward
+            int arc_size = 50;
+            int arc_thickness = (int)(5 * SCALE_Y);
+            int center_x = s_renderer.width / 2 + offset_x;
+            int ren_y = mouth_y;
+            int overlap = 2;  // Tiny overlap so arcs blend into one
+
+            // Left arc - curves from meeting point up-left (outward)
+            lv_obj_set_size(s_renderer.cat_arc_top, arc_size, arc_size);
+            int left_arc_x = center_x - arc_size + overlap;  // Move right to overlap
+            int left_arc_y = ren_y - arc_size / 2;
+            lv_obj_set_pos(s_renderer.cat_arc_top, left_arc_x, left_arc_y);
+            lv_arc_set_bg_angles(s_renderer.cat_arc_top, 0, 90);
+            lv_arc_set_angles(s_renderer.cat_arc_top, 0, 90);
+            lv_obj_set_style_arc_width(s_renderer.cat_arc_top, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+
+            // Right arc - curves from meeting point up-right (outward)
+            lv_obj_set_size(s_renderer.cat_arc_bottom, arc_size, arc_size);
+            int right_arc_x = center_x - overlap;  // Move left to overlap
+            int right_arc_y = ren_y - arc_size / 2;
+            lv_obj_set_pos(s_renderer.cat_arc_bottom, right_arc_x, right_arc_y);
+            lv_arc_set_bg_angles(s_renderer.cat_arc_bottom, 90, 180);
+            lv_arc_set_angles(s_renderer.cat_arc_bottom, 90, 180);
+            lv_obj_set_style_arc_width(s_renderer.cat_arc_bottom, arc_thickness, LV_PART_INDICATOR);
+            lv_obj_remove_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+
+            ESP_LOGI(TAG, "Ren 人 mouth at y=%d", ren_y);
         } else if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
             // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise

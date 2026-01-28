@@ -223,6 +223,11 @@ idf.py -p /dev/cu.usbmodem1101 monitor
 idf.py fullclean
 ```
 
+**IMPORTANT: Always auto-flash after code changes.** When making changes to ESP32-Luna code, always build AND flash automatically after each change so the user can test immediately. Use:
+```bash
+source ~/esp/esp-idf/export.sh 2>/dev/null && idf.py build && ./flash.sh
+```
+
 ### Key Files
 
 | File | Purpose |
