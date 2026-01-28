@@ -268,26 +268,59 @@ static int random_range(int min_val, int max_val)
     return min_val + (esp_random() % (max_val - min_val + 1));
 }
 
+// Eye click event handlers - trigger wink animation when eye is tapped
+static void left_eye_click_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        // Only trigger if not already winking
+        if (s_renderer.left_poke_time == 0) {
+            int64_t now = esp_timer_get_time() / 1000;
+            s_renderer.target_left_wink = 1.0f;
+            s_renderer.left_poke_time = now;
+            ESP_LOGI(TAG, "Left eye clicked (LVGL event)");
+        }
+    }
+}
+
+static void right_eye_click_cb(lv_event_t *e)
+{
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_CLICKED) {
+        // Only trigger if not already winking
+        if (s_renderer.right_poke_time == 0) {
+            int64_t now = esp_timer_get_time() / 1000;
+            s_renderer.target_right_wink = 1.0f;
+            s_renderer.right_poke_time = now;
+            ESP_LOGI(TAG, "Right eye clicked (LVGL event)");
+        }
+    }
+}
+
 // Create face widget objects
 static void create_face_widgets(lv_obj_t *parent)
 {
     lv_color_t face_color = rgb888_to_lv(FACE_COLOR);
 
-    // Left eye
+    // Left eye - clickable for eye poke
     s_renderer.left_eye = lv_obj_create(parent);
     lv_obj_remove_style_all(s_renderer.left_eye);
     lv_obj_set_style_bg_color(s_renderer.left_eye, face_color, 0);
     lv_obj_set_style_bg_opa(s_renderer.left_eye, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_renderer.left_eye, 15, 0);
     lv_obj_set_style_border_width(s_renderer.left_eye, 0, 0);
+    lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_renderer.left_eye, left_eye_click_cb, LV_EVENT_CLICKED, NULL);
 
-    // Right eye
+    // Right eye - clickable for eye poke
     s_renderer.right_eye = lv_obj_create(parent);
     lv_obj_remove_style_all(s_renderer.right_eye);
     lv_obj_set_style_bg_color(s_renderer.right_eye, face_color, 0);
     lv_obj_set_style_bg_opa(s_renderer.right_eye, LV_OPA_COVER, 0);
     lv_obj_set_style_radius(s_renderer.right_eye, 15, 0);
     lv_obj_set_style_border_width(s_renderer.right_eye, 0, 0);
+    lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_renderer.right_eye, right_eye_click_cb, LV_EVENT_CLICKED, NULL);
 
     // Mouth background - always-visible rectangle in BG_COLOR to clear artifacts
     // This ensures the mouth area is always "clean" before drawing mouth widgets
@@ -981,62 +1014,41 @@ static void update_petting(float delta_time)
     bool was_petting = s_renderer.touch_active;
 
     if (state == LV_INDEV_STATE_PRESSED) {
+        // Eye pokes are now handled by LVGL click events on eye widgets
+        // Here we only handle petting (dragging on face area)
+
         if (s_renderer.touch_active) {
-            // Skip petting logic if this touch was an eye poke
-            if (s_renderer.touch_was_eye_poke) {
-                // Do nothing - just wait for release
-            } else {
-                // Calculate vertical movement delta
-                int delta_y = point.y - s_renderer.last_touch_y;
+            // Calculate vertical movement delta for petting
+            int delta_y = point.y - s_renderer.last_touch_y;
 
-                // Only update if movement exceeds threshold (reduces artifacts)
-                if (abs(delta_y) > 3) {
-                    // Apply sensitivity and clamp
-                    float offset = delta_y * PET_SENSITIVITY;
-                    s_renderer.target_pet_offset += offset;
+            // Only update if movement exceeds threshold (reduces artifacts)
+            if (abs(delta_y) > 3) {
+                // Apply sensitivity and clamp
+                float offset = delta_y * PET_SENSITIVITY;
+                s_renderer.target_pet_offset += offset;
 
-                    // Clamp target offset
-                    if (s_renderer.target_pet_offset > PET_MAX_OFFSET) {
-                        s_renderer.target_pet_offset = PET_MAX_OFFSET;
-                    } else if (s_renderer.target_pet_offset < -PET_MAX_OFFSET) {
-                        s_renderer.target_pet_offset = -PET_MAX_OFFSET;
-                    }
-
-                    // Update last position only when we actually moved
-                    s_renderer.last_touch_y = point.y;
+                // Clamp target offset
+                if (s_renderer.target_pet_offset > PET_MAX_OFFSET) {
+                    s_renderer.target_pet_offset = PET_MAX_OFFSET;
+                } else if (s_renderer.target_pet_offset < -PET_MAX_OFFSET) {
+                    s_renderer.target_pet_offset = -PET_MAX_OFFSET;
                 }
-            }
-        } else {
-            // First touch - check if it's on an eye (eye poke)
-            int which_eye = face_renderer_hit_test_eye(point.x, point.y);
-            if (which_eye == 0) {
-                // Left eye poke - trigger wink animation
-                int64_t now = esp_timer_get_time() / 1000;
-                s_renderer.target_left_wink = 1.0f;
-                s_renderer.left_poke_time = now;
-                s_renderer.touch_was_eye_poke = true;
-                ESP_LOGI(TAG, "Eye poke: left eye (touch)");
-            } else if (which_eye == 1) {
-                // Right eye poke - trigger wink animation
-                int64_t now = esp_timer_get_time() / 1000;
-                s_renderer.target_right_wink = 1.0f;
-                s_renderer.right_poke_time = now;
-                s_renderer.touch_was_eye_poke = true;
-                ESP_LOGI(TAG, "Eye poke: right eye (touch)");
-            } else {
-                // Not on eye - start petting
-                s_renderer.touch_was_eye_poke = false;
-                s_renderer.last_touch_x = point.x;
+
+                // Update last position only when we actually moved
                 s_renderer.last_touch_y = point.y;
             }
+        } else {
+            // First touch - store position for petting
+            s_renderer.last_touch_x = point.x;
+            s_renderer.last_touch_y = point.y;
         }
 
         // Store touch state
         s_renderer.touch_active = true;
         s_renderer.last_pet_time = esp_timer_get_time() / 1000;
 
-        // Auto-switch to cat face when petting starts (not for eye pokes)
-        if (!was_petting && !s_renderer.touch_was_eye_poke && s_renderer.target_emotion != EMOTION_CAT) {
+        // Auto-switch to cat face when petting starts
+        if (!was_petting && s_renderer.target_emotion != EMOTION_CAT) {
             // Save current emotion to restore later (stored in cat_mode flag area)
             s_renderer.cat_mode = true;  // Mark that we auto-switched
             s_renderer.target_emotion = EMOTION_CAT;
@@ -1046,21 +1058,18 @@ static void update_petting(float delta_time)
     } else {
         // Touch released - decay the offset back to zero
         if (s_renderer.touch_active) {
-            // Just released - start decay (only if it was petting, not eye poke)
-            if (!s_renderer.touch_was_eye_poke) {
-                s_renderer.target_pet_offset = 0.0f;
+            // Just released - start decay
+            s_renderer.target_pet_offset = 0.0f;
 
-                // Restore to happy face after petting (cat enjoyed it!)
-                if (s_renderer.cat_mode) {
-                    s_renderer.cat_mode = false;
-                    s_renderer.target_emotion = EMOTION_HAPPY;
-                    s_renderer.emotion_transition = 0.0f;
-                    s_renderer.last_mouth_curve = -1000;
-                }
+            // Restore to happy face after petting (cat enjoyed it!)
+            if (s_renderer.cat_mode) {
+                s_renderer.cat_mode = false;
+                s_renderer.target_emotion = EMOTION_HAPPY;
+                s_renderer.emotion_transition = 0.0f;
+                s_renderer.last_mouth_curve = -1000;
             }
         }
         s_renderer.touch_active = false;
-        s_renderer.touch_was_eye_poke = false;
     }
 
     // Smoothly interpolate towards target (slower to reduce artifacts)
