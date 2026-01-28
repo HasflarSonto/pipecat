@@ -30,8 +30,14 @@ typedef enum {
     PAGE_WEATHER,
     PAGE_CLOCK,
     PAGE_CALENDAR,
+    PAGE_SUBWAY,
+    PAGE_TIMER,
+    PAGE_ANIMATION,
     PAGE_COUNT
 } page_t;
+
+// Animation cycling state
+static int s_current_animation = 0;
 
 static page_t s_current_page = PAGE_FACE;
 static bool s_button_last_state = true;  // true = released (pull-up)
@@ -80,7 +86,9 @@ static bool poll_boot_button(void)
  */
 static void show_page(page_t page)
 {
-    static const char* page_names[] = {"Face", "Weather", "Clock", "Calendar"};
+    static const char* page_names[] = {
+        "Face", "Weather", "Clock", "Calendar", "Subway", "Timer", "Animation"
+    };
     ESP_LOGI(TAG, "Showing page: %s", page_names[page]);
 
     // Note: Each show_* function calls hide_all_screen_elements() internally,
@@ -98,15 +106,47 @@ static void show_page(page_t page)
             break;
 
         case PAGE_CLOCK:
-            face_renderer_show_clock(12, 34, false, NULL);
+            face_renderer_show_clock(12, 34, false, "Mon, Jan 27");
             break;
 
         case PAGE_CALENDAR: {
-            calendar_event_t event = {0};
-            strncpy(event.time_str, "In 15 min", sizeof(event.time_str) - 1);
-            strncpy(event.title, "Team Standup", sizeof(event.title) - 1);
-            strncpy(event.location, "Conference Room A", sizeof(event.location) - 1);
-            face_renderer_show_calendar(&event, 1);
+            calendar_event_t events[2] = {0};
+            strncpy(events[0].time_str, "In 15 min", sizeof(events[0].time_str) - 1);
+            strncpy(events[0].title, "Team Standup", sizeof(events[0].title) - 1);
+            strncpy(events[0].location, "Conference Room A", sizeof(events[0].location) - 1);
+            strncpy(events[1].time_str, "2:00 PM", sizeof(events[1].time_str) - 1);
+            strncpy(events[1].title, "Design Review", sizeof(events[1].title) - 1);
+            strncpy(events[1].location, "Zoom", sizeof(events[1].location) - 1);
+            face_renderer_show_calendar(events, 2);
+            break;
+        }
+
+        case PAGE_SUBWAY: {
+            // Demo MTA subway times - 1 train to Downtown
+            int times[3] = {2, 8, 15};  // Minutes until arrival
+            face_renderer_show_subway("1", 0xEE352E, "110 St", "Downtown", times, 3);
+            break;
+        }
+
+        case PAGE_TIMER:
+            // Demo 25-minute Pomodoro timer (not running)
+            face_renderer_show_timer(25, 0, "Focus", false);
+            break;
+
+        case PAGE_ANIMATION: {
+            // Cycle through animation types
+            static const animation_type_t animations[] = {
+                ANIMATION_RAIN,
+                ANIMATION_SNOW,
+                ANIMATION_STARS,
+                ANIMATION_MATRIX
+            };
+            static const char* anim_names[] = {"Rain", "Snow", "Stars", "Matrix"};
+            int num_animations = sizeof(animations) / sizeof(animations[0]);
+
+            ESP_LOGI(TAG, "Animation: %s", anim_names[s_current_animation]);
+            face_renderer_show_animation(animations[s_current_animation]);
+            s_current_animation = (s_current_animation + 1) % num_animations;
             break;
         }
 
@@ -160,7 +200,8 @@ void app_main(void)
     show_page(s_current_page);
 
     ESP_LOGI(TAG, "=== ESP32-Luna Ready ===");
-    ESP_LOGI(TAG, "Press boot button to cycle: Face -> Weather -> Clock -> Calendar");
+    ESP_LOGI(TAG, "Press boot button to cycle through pages:");
+    ESP_LOGI(TAG, "  Face -> Weather -> Clock -> Calendar -> Subway -> Timer -> Animation");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
 
     // Main loop - simple button polling
