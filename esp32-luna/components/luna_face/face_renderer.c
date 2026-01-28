@@ -1009,19 +1009,20 @@ static void update_petting(float delta_time)
         } else {
             // First touch - check if it's on an eye (eye poke)
             int which_eye = face_renderer_hit_test_eye(point.x, point.y);
-            if (which_eye >= 0) {
-                // Eye poke detected - trigger wink animation
+            if (which_eye == 0) {
+                // Left eye poke - trigger wink animation
                 int64_t now = esp_timer_get_time() / 1000;
-                if (which_eye == 0) {
-                    s_renderer.target_left_wink = 1.0f;
-                    s_renderer.left_poke_time = now;
-                    ESP_LOGI(TAG, "Eye poke: left eye (touch)");
-                } else {
-                    s_renderer.target_right_wink = 1.0f;
-                    s_renderer.right_poke_time = now;
-                    ESP_LOGI(TAG, "Eye poke: right eye (touch)");
-                }
+                s_renderer.target_left_wink = 1.0f;
+                s_renderer.left_poke_time = now;
                 s_renderer.touch_was_eye_poke = true;
+                ESP_LOGI(TAG, "Eye poke: left eye (touch)");
+            } else if (which_eye == 1) {
+                // Right eye poke - trigger wink animation
+                int64_t now = esp_timer_get_time() / 1000;
+                s_renderer.target_right_wink = 1.0f;
+                s_renderer.right_poke_time = now;
+                s_renderer.touch_was_eye_poke = true;
+                ESP_LOGI(TAG, "Eye poke: right eye (touch)");
             } else {
                 // Not on eye - start petting
                 s_renderer.touch_was_eye_poke = false;
@@ -1798,6 +1799,19 @@ static void clear_particles(void)
 // Hide ALL screen-specific elements (call at start of each show_* function)
 static void hide_all_screen_elements(void)
 {
+    // Reset touch/animation state to prevent artifacts when switching modes
+    s_renderer.touch_active = false;
+    s_renderer.touch_was_eye_poke = false;
+    s_renderer.left_wink = 0.0f;
+    s_renderer.right_wink = 0.0f;
+    s_renderer.target_left_wink = 0.0f;
+    s_renderer.target_right_wink = 0.0f;
+    s_renderer.left_poke_time = 0;
+    s_renderer.right_poke_time = 0;
+    s_renderer.pet_offset_y = 0.0f;
+    s_renderer.target_pet_offset = 0.0f;
+    s_renderer.cat_mode = false;
+
     // Hide face elements
     lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
