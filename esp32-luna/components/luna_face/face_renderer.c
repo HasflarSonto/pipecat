@@ -98,6 +98,16 @@ static const char *TAG = "face_renderer";
 #define BLINK_MIN_INTERVAL_MS      2000
 #define BLINK_MAX_INTERVAL_MS      5000
 
+// Idle animation timing
+#define IDLE_TIMEOUT_MS            2000    // Go idle after no external gaze for this long
+#define IDLE_GAZE_MIN_MS           1500    // Min time between gaze changes
+#define IDLE_GAZE_MAX_MS           4000    // Max time between gaze changes
+#define IDLE_EMOTION_MIN_MS        8000    // Min time between emotion changes
+#define IDLE_EMOTION_MAX_MS        20000   // Max time between emotion changes
+#define BREATHING_SPEED            1.5f    // Breathing cycle speed (radians per second)
+#define BREATHING_AMOUNT           0.08f   // How much eyes grow/shrink (8%)
+#define POKE_REACTION_MS           1200    // How long sad face shows after poke
+
 // Scale factors from 240x320 reference to 502x410 landscape
 #define SCALE_X                    2.092f   // 502/240
 #define SCALE_Y                    1.281f   // 410/320
@@ -208,6 +218,15 @@ static struct {
     int64_t dizzy_start_time;
     float dizzy_wobble;       // Current wobble phase
     emotion_id_t pre_dizzy_emotion;  // Emotion to restore after dizzy
+
+    // Idle animation state
+    bool idle_mode;                  // True when no external tracking active
+    int64_t last_external_gaze_time; // Last time external gaze was set
+    int64_t idle_gaze_change_time;   // When to pick new random gaze target
+    int64_t idle_emotion_time;       // When to try changing idle emotion
+    float breathing_phase;           // Phase for eye size breathing (0 to 2*PI)
+    int64_t poke_reaction_end_time;  // When poke reaction ends (0 = no reaction)
+    emotion_id_t base_emotion;       // Emotion to return to after reactions
 
     // Text mode
     char text_content[MAX_TEXT_LENGTH];
@@ -454,6 +473,11 @@ static void update_face_widgets(void)
     float eye_width = params->eye_width * SCALE_X;
     base_eye_height *= params->eye_openness;
     base_eye_height *= (1.0f - blink_factor * 0.95f);
+
+    // Apply breathing effect (subtle eye size pulse)
+    float breathing_factor = 1.0f + sinf(s_renderer.breathing_phase) * BREATHING_AMOUNT;
+    base_eye_height *= breathing_factor;
+    eye_width *= breathing_factor;
 
     // Apply independent wink factors to each eye
     float left_eye_height = base_eye_height * (1.0f - s_renderer.left_wink * 0.95f);
@@ -985,6 +1009,74 @@ static void update_animation(float delta_time)
             s_renderer.dizzy_wobble += delta_time * DIZZY_WOBBLE_SPEED;
         }
     }
+
+    // === IDLE ANIMATIONS ===
+
+    // Check if we should enter idle mode (no external gaze tracking)
+    if (!s_renderer.idle_mode && !s_renderer.touch_active && !s_renderer.is_dizzy) {
+        if (current_time - s_renderer.last_external_gaze_time > IDLE_TIMEOUT_MS) {
+            s_renderer.idle_mode = true;
+            s_renderer.idle_gaze_change_time = current_time;
+            s_renderer.idle_emotion_time = current_time + random_range(IDLE_EMOTION_MIN_MS, IDLE_EMOTION_MAX_MS);
+        }
+    }
+
+    // Update breathing effect (always active, subtle eye size pulse)
+    s_renderer.breathing_phase += delta_time * BREATHING_SPEED;
+    if (s_renderer.breathing_phase > 6.28318f) {  // 2*PI
+        s_renderer.breathing_phase -= 6.28318f;
+    }
+
+    // Handle poke reaction (show sad face briefly)
+    if (s_renderer.poke_reaction_end_time > 0) {
+        if (current_time > s_renderer.poke_reaction_end_time) {
+            // Reaction over - return to base emotion
+            s_renderer.poke_reaction_end_time = 0;
+            if (s_renderer.target_emotion == EMOTION_SAD) {
+                s_renderer.target_emotion = s_renderer.base_emotion;
+                s_renderer.emotion_transition = 0.0f;
+            }
+        }
+    }
+
+    // Idle mode behaviors
+    if (s_renderer.idle_mode && !s_renderer.cat_mode && s_renderer.poke_reaction_end_time == 0) {
+        // Random gaze changes
+        if (current_time > s_renderer.idle_gaze_change_time) {
+            // Pick new random gaze target (bias toward center)
+            float new_x = 0.3f + (random_range(0, 100) / 250.0f);  // 0.3 to 0.7
+            float new_y = 0.35f + (random_range(0, 100) / 333.0f); // 0.35 to 0.65
+            s_renderer.target_gaze_x = new_x;
+            s_renderer.target_gaze_y = new_y;
+            s_renderer.idle_gaze_change_time = current_time + random_range(IDLE_GAZE_MIN_MS, IDLE_GAZE_MAX_MS);
+        }
+
+        // Occasional emotion changes
+        if (current_time > s_renderer.idle_emotion_time) {
+            // Pick a random idle emotion
+            int emotion_roll = random_range(0, 100);
+            emotion_id_t new_emotion;
+
+            if (emotion_roll < 50) {
+                new_emotion = EMOTION_EYES_ONLY;  // 50% - default calm
+            } else if (emotion_roll < 70) {
+                new_emotion = EMOTION_HAPPY;      // 20% - happy
+            } else if (emotion_roll < 85) {
+                new_emotion = EMOTION_THINKING;   // 15% - thinking/curious
+            } else if (emotion_roll < 95) {
+                new_emotion = EMOTION_NEUTRAL;    // 10% - neutral with mouth
+            } else {
+                new_emotion = EMOTION_EXCITED;    // 5% - excited
+            }
+
+            if (new_emotion != s_renderer.target_emotion) {
+                s_renderer.target_emotion = new_emotion;
+                s_renderer.base_emotion = new_emotion;
+                s_renderer.emotion_transition = 0.0f;
+            }
+            s_renderer.idle_emotion_time = current_time + random_range(IDLE_EMOTION_MIN_MS, IDLE_EMOTION_MAX_MS);
+        }
+    }
 }
 
 // Update petting state based on touch input
@@ -1191,6 +1283,16 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     s_renderer.last_blink_time = esp_timer_get_time() / 1000;
     s_renderer.blink_interval_ms = random_range(BLINK_MIN_INTERVAL_MS, BLINK_MAX_INTERVAL_MS);
 
+    // Initialize idle animation state
+    int64_t now = esp_timer_get_time() / 1000;
+    s_renderer.idle_mode = true;  // Start in idle mode
+    s_renderer.last_external_gaze_time = now;
+    s_renderer.idle_gaze_change_time = now + random_range(IDLE_GAZE_MIN_MS, IDLE_GAZE_MAX_MS);
+    s_renderer.idle_emotion_time = now + random_range(IDLE_EMOTION_MIN_MS, IDLE_EMOTION_MAX_MS);
+    s_renderer.breathing_phase = 0.0f;
+    s_renderer.poke_reaction_end_time = 0;
+    s_renderer.base_emotion = EMOTION_EYES_ONLY;
+
     // Initialize last values for change detection
     s_renderer.last_eye_x = -1000;
     s_renderer.last_eye_y = -1000;
@@ -1334,6 +1436,8 @@ void face_renderer_set_gaze(float x, float y)
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
         s_renderer.target_gaze_x = x;
         s_renderer.target_gaze_y = y;
+        s_renderer.last_external_gaze_time = esp_timer_get_time() / 1000;
+        s_renderer.idle_mode = false;  // External tracking active
         xSemaphoreGive(s_renderer.mutex);
     }
 }
@@ -1395,6 +1499,15 @@ void face_renderer_poke_eye(int which_eye)
             s_renderer.right_poke_time = now;
             ESP_LOGI(TAG, "Right eye poked!");
         }
+
+        // Trigger sad reaction (ouch! that hurt!)
+        if (s_renderer.poke_reaction_end_time == 0 && !s_renderer.cat_mode) {
+            s_renderer.poke_reaction_end_time = now + POKE_REACTION_MS;
+            s_renderer.target_emotion = EMOTION_SAD;
+            s_renderer.emotion_transition = 0.0f;
+            ESP_LOGI(TAG, "Ouch! Showing sad reaction");
+        }
+
         xSemaphoreGive(s_renderer.mutex);
     }
 }
