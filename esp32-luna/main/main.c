@@ -32,12 +32,8 @@ typedef enum {
     PAGE_CALENDAR,
     PAGE_SUBWAY,
     PAGE_TIMER,
-    PAGE_ANIMATION,
     PAGE_COUNT
 } page_t;
-
-// Animation cycling state
-static int s_current_animation = 0;
 
 static page_t s_current_page = PAGE_FACE;
 static bool s_button_last_state = true;  // true = released (pull-up)
@@ -87,7 +83,7 @@ static bool poll_boot_button(void)
 static void show_page(page_t page)
 {
     static const char* page_names[] = {
-        "Face", "Weather", "Clock", "Calendar", "Subway", "Timer", "Animation"
+        "Face", "Weather", "Clock", "Calendar", "Subway", "Timer"
     };
     ESP_LOGI(TAG, "Showing page: %s", page_names[page]);
 
@@ -132,23 +128,6 @@ static void show_page(page_t page)
             // Demo 25-minute Pomodoro timer (not running)
             face_renderer_show_timer(25, 0, "Focus", false);
             break;
-
-        case PAGE_ANIMATION: {
-            // Cycle through animation types
-            static const animation_type_t animations[] = {
-                ANIMATION_RAIN,
-                ANIMATION_SNOW,
-                ANIMATION_STARS,
-                ANIMATION_MATRIX
-            };
-            static const char* anim_names[] = {"Rain", "Snow", "Stars", "Matrix"};
-            int num_animations = sizeof(animations) / sizeof(animations[0]);
-
-            ESP_LOGI(TAG, "Animation: %s", anim_names[s_current_animation]);
-            face_renderer_show_animation(animations[s_current_animation]);
-            s_current_animation = (s_current_animation + 1) % num_animations;
-            break;
-        }
 
         default:
             break;
@@ -201,7 +180,7 @@ void app_main(void)
 
     ESP_LOGI(TAG, "=== ESP32-Luna Ready ===");
     ESP_LOGI(TAG, "Press boot button to cycle through pages:");
-    ESP_LOGI(TAG, "  Face -> Weather -> Clock -> Calendar -> Subway -> Timer -> Animation");
+    ESP_LOGI(TAG, "  Face -> Weather -> Clock -> Calendar -> Subway -> Timer");
     ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
 
     // Main loop - simple button polling

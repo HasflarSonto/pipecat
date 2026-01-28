@@ -68,8 +68,8 @@ static const char *TAG = "face_renderer";
 
 // Standardized UI Style
 #define STYLE_TAG_COLOR     COLOR_TEXT_SECONDARY  // Gray for top-left screen tags
-#define STYLE_TAG_POS_X     20              // Top-left tag X position
-#define STYLE_TAG_POS_Y     15              // Top-left tag Y position
+#define STYLE_TAG_POS_X     40              // Top-left tag X position (increased for screen bezel)
+#define STYLE_TAG_POS_Y     20              // Top-left tag Y position
 #define STYLE_PRIMARY_TEXT  COLOR_TEXT_PRIMARY    // Pure white for primary content
 #define STYLE_SECONDARY_TEXT COLOR_TEXT_SECONDARY // Gray for secondary info
 #define STYLE_ACCENT_COLOR  COLOR_ACCENT_BLUE     // Blue for accents/highlights
@@ -2325,13 +2325,33 @@ void face_renderer_timer_start(void)
 {
     s_timer_running = true;
     s_timer_last_tick = esp_timer_get_time() / 1000;
-    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", true);
+    // Just update button colors, don't redraw entire screen
+    if (bsp_display_lock(100)) {
+        if (s_timer_btn_start) {
+            lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(COLOR_CARD_BG), 0);
+        }
+        if (s_timer_btn_pause) {
+            lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(COLOR_ACCENT_ORANGE), 0);
+        }
+        bsp_display_unlock();
+    }
+    ESP_LOGI(TAG, "Timer started");
 }
 
 void face_renderer_timer_pause(void)
 {
     s_timer_running = false;
-    face_renderer_show_timer(s_timer_minutes, s_timer_seconds, "Focus", false);
+    // Just update button colors, don't redraw entire screen
+    if (bsp_display_lock(100)) {
+        if (s_timer_btn_start) {
+            lv_obj_set_style_bg_color(s_timer_btn_start, lv_color_hex(COLOR_ACCENT_GREEN), 0);
+        }
+        if (s_timer_btn_pause) {
+            lv_obj_set_style_bg_color(s_timer_btn_pause, lv_color_hex(COLOR_CARD_BG), 0);
+        }
+        bsp_display_unlock();
+    }
+    ESP_LOGI(TAG, "Timer paused");
 }
 
 void face_renderer_timer_reset(int minutes)
