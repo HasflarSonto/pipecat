@@ -233,6 +233,7 @@ static struct {
     int last_eye_y;
     int last_eye_w;
     int last_eye_h;
+    int last_right_eye_h;  // Track right eye height separately for wink detection
     int last_mouth_curve;
     bool last_angry_brows;
     bool last_sparkle;
@@ -509,11 +510,12 @@ static void update_face_widgets(void)
     int right_eye_x = s_renderer.right_eye_base_x + offset_x + gaze_x_offset + think_offset - eye_w/2;
     int right_eye_y = s_renderer.eye_base_y + offset_y + gaze_y_offset + right_tilt - right_eye_h/2;
 
-    // Check if significant change (now we need to track both eyes' heights)
+    // Check if significant change (track both eyes' heights for independent wink)
     bool eye_changed = (abs(left_eye_x - s_renderer.last_eye_x) > MIN_EYE_CHANGE ||
                         abs(left_eye_y - s_renderer.last_eye_y) > MIN_EYE_CHANGE ||
                         abs(eye_w - s_renderer.last_eye_w) > MIN_EYE_CHANGE ||
                         abs(left_eye_h - s_renderer.last_eye_h) > MIN_EYE_CHANGE ||
+                        abs(right_eye_h - s_renderer.last_right_eye_h) > MIN_EYE_CHANGE ||
                         s_renderer.left_wink > 0.01f || s_renderer.right_wink > 0.01f ||
                         s_renderer.is_dizzy);
 
@@ -532,6 +534,7 @@ static void update_face_widgets(void)
         s_renderer.last_eye_y = left_eye_y;
         s_renderer.last_eye_w = eye_w;
         s_renderer.last_eye_h = left_eye_h;
+        s_renderer.last_right_eye_h = right_eye_h;
     }
 
     // Sparkles disabled - they looked scary (like pupils)
@@ -1193,6 +1196,7 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     s_renderer.last_eye_y = -1000;
     s_renderer.last_eye_w = 0;
     s_renderer.last_eye_h = 0;
+    s_renderer.last_right_eye_h = 0;
     s_renderer.last_mouth_curve = -1000;
     s_renderer.last_angry_brows = false;
     s_renderer.last_sparkle = false;
