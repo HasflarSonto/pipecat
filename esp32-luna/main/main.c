@@ -83,11 +83,13 @@ static void show_page(page_t page)
     static const char* page_names[] = {"Face", "Weather", "Clock", "Calendar"};
     ESP_LOGI(TAG, "Showing page: %s", page_names[page]);
 
-    // Clear previous mode widgets first
-    face_renderer_clear_display();
+    // Note: Each show_* function calls hide_all_screen_elements() internally,
+    // so we only call face_renderer_clear_display() for PAGE_FACE
 
     switch (page) {
         case PAGE_FACE:
+            // clear_display returns to face mode and shows eyes
+            face_renderer_clear_display();
             face_renderer_set_emotion(EMOTION_EYES_ONLY);
             break;
 

@@ -1791,6 +1791,7 @@ static void hide_all_screen_elements(void)
     if (s_renderer.left_sparkle) lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
     if (s_renderer.right_sparkle) lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
     if (s_renderer.mouth_bg) lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.wavy_mouth) lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
 
     // Hide text label
     lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
@@ -1935,10 +1936,10 @@ void face_renderer_show_weather(const char *temp, weather_icon_t icon,
 {
     if (!s_renderer.initialized) return;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_WEATHER;
-
-        if (bsp_display_lock(100)) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide runs
+            s_renderer.mode = DISPLAY_MODE_WEATHER;
             // Hide ALL other screen elements first
             hide_all_screen_elements();
 
@@ -2022,10 +2023,8 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
 {
     if (!s_renderer.initialized) return;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_TIMER;
-
-        // Store timer state
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        // Store timer state (safe even without display lock)
         s_timer_minutes = minutes;
         s_timer_seconds = seconds;
         s_timer_running = is_running;
@@ -2036,7 +2035,9 @@ void face_renderer_show_timer(int minutes, int seconds, const char *label,
             s_timer_total_seconds_start = current_total;
         }
 
-        if (bsp_display_lock(100)) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide runs
+            s_renderer.mode = DISPLAY_MODE_TIMER;
             // Hide ALL other screen elements first
             hide_all_screen_elements();
 
@@ -2214,10 +2215,10 @@ void face_renderer_show_clock(int hours, int minutes, bool is_24h, const char *d
 {
     if (!s_renderer.initialized) return;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_CLOCK;
-
-        if (bsp_display_lock(100)) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide runs
+            s_renderer.mode = DISPLAY_MODE_CLOCK;
             hide_all_screen_elements();
 
             lv_obj_t *scr = lv_scr_act();
@@ -2300,10 +2301,10 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
     if (!s_renderer.initialized) return;
     if (num_times < 1 || num_times > 3) num_times = 1;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_SUBWAY;
-
-        if (bsp_display_lock(100)) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide runs
+            s_renderer.mode = DISPLAY_MODE_SUBWAY;
             hide_all_screen_elements();
 
             lv_obj_t *scr = lv_scr_act();
@@ -2447,10 +2448,10 @@ void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
     if (num_events < 1) num_events = 1;
     if (num_events > MAX_CALENDAR_CARDS) num_events = MAX_CALENDAR_CARDS;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_CALENDAR;
-
-        if (bsp_display_lock(100)) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide_all_screen_elements runs
+            s_renderer.mode = DISPLAY_MODE_CALENDAR;
             hide_all_screen_elements();
 
             lv_obj_t *scr = lv_scr_act();
@@ -2497,10 +2498,12 @@ void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
             }
 
             bsp_display_unlock();
+            ESP_LOGI(TAG, "Calendar display: %d events", num_events);
+        } else {
+            ESP_LOGE(TAG, "Failed to acquire display lock for calendar");
         }
 
         xSemaphoreGive(s_renderer.mutex);
-        ESP_LOGI(TAG, "Calendar display: %d events", num_events);
     }
 }
 
@@ -2624,10 +2627,10 @@ void face_renderer_show_animation(animation_type_t type)
 {
     if (!s_renderer.initialized) return;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
-        s_renderer.mode = DISPLAY_MODE_ANIMATION;
-
-        if (bsp_display_lock(100)) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide runs
+            s_renderer.mode = DISPLAY_MODE_ANIMATION;
             // Hide ALL other screen elements first
             hide_all_screen_elements();
 
@@ -2656,11 +2659,11 @@ void face_renderer_clear_display(void)
 {
     if (!s_renderer.initialized) return;
 
-    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
         display_mode_t prev_mode = s_renderer.mode;
         s_renderer.mode = DISPLAY_MODE_FACE;
 
-        if (bsp_display_lock(100)) {
+        if (bsp_display_lock(500)) {
             // Hide ALL screen elements
             hide_all_screen_elements();
 
