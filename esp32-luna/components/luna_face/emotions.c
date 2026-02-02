@@ -174,6 +174,21 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
         .cat_face = false,
         .no_mouth = false,
     },
+    // EMOTION_DISTRESSED (lying on back or face down) - worried/uncomfortable
+    {
+        .eye_height = 55.0f,
+        .eye_width = 50.0f,    // Wide worried eyes
+        .eye_openness = 1.15f, // Eyes wide open
+        .mouth_curve = -0.7f,  // Worried frown
+        .mouth_open = 0.15f,   // Slightly open, anxious
+        .mouth_width = 45.0f,
+        .angry_brows = false,
+        .look_side = false,
+        .tilt_eyes = false,
+        .sparkle = false,
+        .cat_face = false,
+        .no_mouth = false,
+    },
 };
 
 static const char *s_emotion_names[EMOTION_COUNT] = {
@@ -188,6 +203,7 @@ static const char *s_emotion_names[EMOTION_COUNT] = {
     "excited",
     "cat",
     "dizzy",
+    "distressed",
 };
 
 const emotion_config_t* emotion_get_config(emotion_id_t id)

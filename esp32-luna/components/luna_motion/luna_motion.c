@@ -42,10 +42,24 @@ typedef struct {
     bool last_direction_positive;  // true = increasing, false = decreasing
 } shake_state_t;
 
+// Orientation detection state
+typedef struct {
+    luna_orientation_t current;
+    luna_orientation_t last_stable;
+    int64_t last_change_time;
+    int stable_count;  // Count of consecutive samples in same orientation
+} orientation_state_t;
+
+// Orientation detection thresholds
+#define GRAVITY_THRESHOLD       7.0f    // m/s^2 - threshold to detect gravity on an axis
+#define ORIENTATION_DEBOUNCE_MS 500     // ms - debounce time before reporting change
+#define ORIENTATION_STABLE_COUNT 10     // samples needed to confirm orientation
+
 // Module state
 static struct {
     luna_motion_config_t config;
     shake_state_t shake;
+    orientation_state_t orientation;
     TaskHandle_t task;
     bool running;
     bool initialized;
@@ -57,6 +71,7 @@ static struct {
 // Forward declarations
 static void motion_task_func(void *pvParameters);
 static void process_accel_sample(float ax, float ay, float az);
+static void process_orientation(float ax, float ay, float az);
 
 esp_err_t luna_motion_init(const luna_motion_config_t *config)
 {
@@ -75,10 +90,16 @@ esp_err_t luna_motion_init(const luna_motion_config_t *config)
         s_motion.config.shake_window_ms = DEFAULT_SHAKE_WINDOW_MS;
         s_motion.config.cooldown_ms = DEFAULT_COOLDOWN_MS;
         s_motion.config.on_shake = NULL;
+        s_motion.config.on_orientation_change = NULL;
     }
 
     // Initialize shake state
     memset(&s_motion.shake, 0, sizeof(shake_state_t));
+
+    // Initialize orientation state
+    memset(&s_motion.orientation, 0, sizeof(orientation_state_t));
+    s_motion.orientation.current = ORIENTATION_UPRIGHT;
+    s_motion.orientation.last_stable = ORIENTATION_UPRIGHT;
 
 #ifndef SIMULATOR
     // Initialize QMI8658 IMU sensor
@@ -213,12 +234,79 @@ float luna_motion_get_shake_intensity(void)
     return s_motion.shake.shake_intensity;
 }
 
+luna_orientation_t luna_motion_get_orientation(void)
+{
+    return s_motion.orientation.current;
+}
+
 void luna_motion_tick(float accel_x, float accel_y, float accel_z)
 {
     if (!s_motion.initialized) {
         return;
     }
     process_accel_sample(accel_x, accel_y, accel_z);
+    process_orientation(accel_x, accel_y, accel_z);
+}
+
+// Detect device orientation based on gravity direction
+// Device coordinate system (when upright with buttons on top):
+// - X axis: horizontal, pointing right
+// - Y axis: vertical, pointing up (gravity = -9.8 when upright)
+// - Z axis: pointing out of screen toward user
+//
+// Orientations:
+// - Upright: Y has gravity (negative)
+// - On back (screen up): Z has gravity (positive - screen facing up)
+// - Face down: Z has gravity (negative - screen facing down)
+static void process_orientation(float ax, float ay, float az)
+{
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    orientation_state_t *orient = &s_motion.orientation;
+
+    // Determine current orientation based on which axis has gravity
+    luna_orientation_t detected = ORIENTATION_OTHER;
+
+    // Check if Z axis has strong gravity component (lying flat)
+    if (az > GRAVITY_THRESHOLD) {
+        // Positive Z = screen facing up = on back
+        detected = ORIENTATION_ON_BACK;
+    } else if (az < -GRAVITY_THRESHOLD) {
+        // Negative Z = screen facing down = face down
+        detected = ORIENTATION_FACE_DOWN;
+    } else if (ay < -GRAVITY_THRESHOLD || ay > GRAVITY_THRESHOLD) {
+        // Y axis has gravity = upright (or upside down, treat as upright)
+        detected = ORIENTATION_UPRIGHT;
+    } else if (ax < -GRAVITY_THRESHOLD || ax > GRAVITY_THRESHOLD) {
+        // X axis has gravity = tilted sideways, treat as upright-ish
+        detected = ORIENTATION_UPRIGHT;
+    }
+
+    // Debounce: require stable readings before changing
+    if (detected == orient->last_stable) {
+        orient->stable_count++;
+    } else {
+        orient->stable_count = 1;
+        orient->last_stable = detected;
+    }
+
+    // Only change orientation if stable for enough samples and debounce time passed
+    if (orient->stable_count >= ORIENTATION_STABLE_COUNT &&
+        detected != orient->current &&
+        (now_ms - orient->last_change_time) > ORIENTATION_DEBOUNCE_MS) {
+
+        luna_orientation_t old = orient->current;
+        orient->current = detected;
+        orient->last_change_time = now_ms;
+
+        const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "OTHER"};
+        ESP_LOGI(TAG, "Orientation changed: %s -> %s",
+                 orient_names[old], orient_names[detected]);
+
+        // Call callback if registered
+        if (s_motion.config.on_orientation_change) {
+            s_motion.config.on_orientation_change(detected);
+        }
+    }
 }
 
 // Process a single accelerometer sample
@@ -346,6 +434,7 @@ static void motion_task_func(void *pvParameters)
                     // Process the sample (outside lock to minimize lock time)
                     bsp_display_unlock();
                     process_accel_sample(data.accelX, data.accelY, data.accelZ);
+                    process_orientation(data.accelX, data.accelY, data.accelZ);
                     vTaskDelay(pdMS_TO_TICKS(MOTION_SAMPLE_PERIOD_MS));
                     continue;
                 }

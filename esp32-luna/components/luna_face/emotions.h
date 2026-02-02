@@ -46,6 +46,7 @@ typedef enum {
     EMOTION_EXCITED,
     EMOTION_CAT,
     EMOTION_DIZZY,          // Dizzy from being shaken - spiral eyes
+    EMOTION_DISTRESSED,     // Distressed - when lying on back or face down
     EMOTION_COUNT
 } emotion_id_t;
 

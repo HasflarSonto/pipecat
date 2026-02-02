@@ -20,6 +20,22 @@ extern "C" {
 typedef void (*luna_motion_shake_cb_t)(float intensity);
 
 /**
+ * @brief Device orientation states
+ */
+typedef enum {
+    ORIENTATION_UPRIGHT,      // Normal - standing on side, buttons up
+    ORIENTATION_ON_BACK,      // Lying on back - screen facing ceiling
+    ORIENTATION_FACE_DOWN,    // Face down - screen facing floor
+    ORIENTATION_OTHER,        // Tilted or unknown orientation
+} luna_orientation_t;
+
+/**
+ * @brief Callback when orientation changes
+ * @param orientation New orientation
+ */
+typedef void (*luna_motion_orientation_cb_t)(luna_orientation_t orientation);
+
+/**
  * @brief Motion detection configuration
  */
 typedef struct {
@@ -28,6 +44,7 @@ typedef struct {
     int shake_window_ms;        // Time window for shake detection (ms), default 500
     int cooldown_ms;            // Cooldown after shake detected (ms), default 2000
     luna_motion_shake_cb_t on_shake;  // Callback when shake detected
+    luna_motion_orientation_cb_t on_orientation_change;  // Callback when orientation changes
 } luna_motion_config_t;
 
 /**
@@ -66,6 +83,12 @@ bool luna_motion_is_shaking(void);
  * @return Current shake intensity, 0 if not shaking
  */
 float luna_motion_get_shake_intensity(void);
+
+/**
+ * @brief Get current device orientation
+ * @return Current orientation
+ */
+luna_orientation_t luna_motion_get_orientation(void);
 
 /**
  * @brief Manual tick for testing/simulator (call from main loop)

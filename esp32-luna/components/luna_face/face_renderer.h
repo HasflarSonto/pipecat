@@ -324,6 +324,19 @@ void face_renderer_set_dizzy(bool dizzy);
  */
 bool face_renderer_is_dizzy(void);
 
+/**
+ * @brief Set distressed mode (wavy mouth only, eyes stay normal)
+ * Auto-clears after 10 seconds. Used for orientation detection.
+ * @param distressed true to enable, false to disable
+ */
+void face_renderer_set_distressed(bool distressed);
+
+/**
+ * @brief Check if currently distressed
+ * @return true if distressed
+ */
+bool face_renderer_is_distressed(void);
+
 #ifdef __cplusplus
 }
 #endif

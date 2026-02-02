@@ -18,6 +18,7 @@
 #include "face_renderer.h"
 #include "pmu_manager.h"
 #include "luna_motion.h"
+#include "emotions.h"
 
 static const char *TAG = "luna_main";
 
@@ -39,6 +40,8 @@ typedef enum {
 static page_t s_current_page = PAGE_FACE;
 static bool s_button_last_state = true;  // true = released (pull-up)
 static int64_t s_button_last_press_time = 0;
+static emotion_id_t s_pre_distress_emotion = EMOTION_EYES_ONLY;  // Emotion before distress
+static bool s_is_distressed = false;  // Currently showing distress
 
 /**
  * @brief Initialize boot button GPIO (polling mode)
@@ -92,6 +95,37 @@ static void on_shake_detected(float intensity)
 }
 
 /**
+ * @brief Callback when device orientation changes
+ */
+static void on_orientation_change(luna_orientation_t orientation)
+{
+    const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "OTHER"};
+    ESP_LOGI(TAG, "Orientation changed to: %s", orient_names[orientation]);
+
+    // Only react to orientation when on face page
+    if (s_current_page != PAGE_FACE) {
+        return;
+    }
+
+    if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_FACE_DOWN) {
+        // Device is not upright - trigger distressed effect (wavy mouth, normal eyes)
+        if (!s_is_distressed) {
+            s_is_distressed = true;
+            face_renderer_set_distressed(true);
+            ESP_LOGI(TAG, "Luna is distressed! (lying down)");
+        }
+    } else if (orientation == ORIENTATION_UPRIGHT) {
+        // Device is upright again - distressed will auto-clear after 10 seconds
+        // But we can also clear it immediately when upright
+        if (s_is_distressed) {
+            s_is_distressed = false;
+            face_renderer_set_distressed(false);
+            ESP_LOGI(TAG, "Luna is upright again!");
+        }
+    }
+}
+
+/**
  * @brief Show the current page
  */
 static void show_page(page_t page)
@@ -105,11 +139,22 @@ static void show_page(page_t page)
     // so we only call face_renderer_clear_display() for PAGE_FACE
 
     switch (page) {
-        case PAGE_FACE:
+        case PAGE_FACE: {
             // clear_display returns to face mode and shows eyes
             face_renderer_clear_display();
             face_renderer_set_emotion(EMOTION_EYES_ONLY);
+            // Check current orientation and apply distressed if already lying down
+            luna_orientation_t orientation = luna_motion_get_orientation();
+            if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_FACE_DOWN) {
+                s_is_distressed = true;
+                face_renderer_set_distressed(true);
+                ESP_LOGI(TAG, "Luna distressed on page entry (orientation=%d)", orientation);
+            } else {
+                s_is_distressed = false;
+                face_renderer_set_distressed(false);
+            }
             break;
+        }
 
         case PAGE_WEATHER:
             face_renderer_show_weather("72°F", WEATHER_ICON_SUNNY, "Clear skies");
@@ -189,11 +234,12 @@ void app_main(void)
     // Initialize motion detection (shake -> dizzy effect)
     ESP_LOGI(TAG, "Initializing motion detection...");
     luna_motion_config_t motion_config = {
-        .shake_threshold = 10.0f,       // Moderate threshold (m/s^2) - requires deliberate shake
-        .shake_count_trigger = 3,       // 3 direction changes needed
-        .shake_window_ms = 600,         // Reasonable window for detection
-        .cooldown_ms = 2000,            // 2 second cooldown
-        .on_shake = on_shake_detected,  // Callback
+        .shake_threshold = 18.0f,       // High threshold (m/s^2) - requires vigorous shake
+        .shake_count_trigger = 4,       // 4 direction changes needed
+        .shake_window_ms = 500,         // Tighter window - must shake quickly
+        .cooldown_ms = 3000,            // 3 second cooldown between shakes
+        .on_shake = on_shake_detected,  // Shake callback
+        .on_orientation_change = on_orientation_change,  // Orientation callback
     };
     ret = luna_motion_init(&motion_config);
     if (ret == ESP_OK) {

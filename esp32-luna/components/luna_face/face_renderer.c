@@ -219,6 +219,11 @@ static struct {
     float dizzy_wobble;       // Current wobble phase
     emotion_id_t pre_dizzy_emotion;  // Emotion to restore after dizzy
 
+    // Distressed state (orientation detection - wavy mouth only, no eye wobble)
+    bool is_distressed;
+    int64_t distressed_start_time;
+    float distressed_wobble;  // Current wobble phase for wavy mouth
+
     // Idle animation state
     bool idle_mode;                  // True when no external tracking active
     int64_t last_external_gaze_time; // Last time external gaze was set
@@ -269,6 +274,7 @@ static void render_task_func(void *pvParameters);
 static void update_animation(float delta_time);
 static void update_petting(float delta_time);
 static void set_dizzy_internal(bool dizzy);
+static void set_distressed_internal(bool distressed);
 static void update_face_widgets(void);
 static float get_blink_factor(void);
 static void timer_btn_start_click_cb(lv_event_t *e);
@@ -281,6 +287,16 @@ static int s_timer_total_seconds_start = 25 * 60;
 static bool s_timer_running = false;
 static int64_t s_timer_last_tick = 0;
 static lv_obj_t *s_timer_arc = NULL;  // Arc widget for timer progress
+
+// Per-page full-screen background panels - PRE-CREATED DURING INIT
+// These panels "paint over" old content when switching pages.
+// IMPORTANT: Must be created during init, only shown/hidden during mode switching.
+static lv_obj_t *s_weather_bg = NULL;
+static lv_obj_t *s_timer_bg = NULL;
+static lv_obj_t *s_clock_bg = NULL;
+static lv_obj_t *s_calendar_bg = NULL;
+static lv_obj_t *s_subway_bg = NULL;
+static lv_obj_t *s_animation_bg = NULL;
 
 static float lerp(float a, float b, float t)
 {
@@ -629,7 +645,8 @@ static void update_face_widgets(void)
             lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
-            // Keep mouth_curve at current value to avoid triggering re-render on every frame
+            lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI(TAG, "Eyes only mode - mouth hidden");
         } else if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
             // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise
@@ -782,8 +799,10 @@ static void update_face_widgets(void)
         s_renderer.last_mouth_curve = curve_category;
     }
 
-    // Wavy mouth for dizzy state (overrides normal mouth, animates each frame)
-    if (s_renderer.is_dizzy) {
+    // Wavy mouth for dizzy OR distressed state (overrides normal mouth, animates each frame)
+    // Dizzy: wobbly eyes + wavy mouth (from shake)
+    // Distressed: normal eyes + wavy mouth (from lying down)
+    if (s_renderer.is_dizzy || s_renderer.is_distressed) {
         // Hide all normal mouth widgets
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
@@ -802,8 +821,10 @@ static void update_face_widgets(void)
         int num_points = 24;
         int segment_width = wavy_width / (num_points - 1);
 
-        // Use dizzy_wobble as phase offset to animate the wave
-        float phase = s_renderer.dizzy_wobble * 2.0f;
+        // Use appropriate wobble phase based on which effect is active
+        float phase = s_renderer.is_dizzy ?
+            (s_renderer.dizzy_wobble * 2.0f) :
+            (s_renderer.distressed_wobble * 2.0f);
 
         for (int i = 0; i < num_points; i++) {
             s_renderer.wavy_mouth_points[i].x = i * segment_width;
@@ -820,7 +841,7 @@ static void update_face_widgets(void)
         lv_obj_set_pos(s_renderer.wavy_mouth, wavy_x, wavy_y);
         lv_obj_remove_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
     } else {
-        // Hide wavy mouth when not dizzy
+        // Hide wavy mouth when not dizzy or distressed
         lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
     }
 
@@ -1058,6 +1079,21 @@ static void update_animation(float delta_time)
         } else {
             // Update wobble phase
             s_renderer.dizzy_wobble += delta_time * DIZZY_WOBBLE_SPEED;
+        }
+    }
+
+    // Update distressed state (wavy mouth only, no eye wobble)
+    #define DISTRESSED_DURATION_MS 10000  // How long distressed lasts (10 seconds)
+    #define DISTRESSED_WOBBLE_SPEED 6.0f  // Wobble frequency for wavy mouth
+
+    if (s_renderer.is_distressed) {
+        int64_t elapsed = current_time - s_renderer.distressed_start_time;
+        if (elapsed > DISTRESSED_DURATION_MS) {
+            // Auto-recover from distressed after duration
+            set_distressed_internal(false);
+        } else {
+            // Update wobble phase for wavy mouth animation
+            s_renderer.distressed_wobble += delta_time * DISTRESSED_WOBBLE_SPEED;
         }
     }
 
@@ -1314,6 +1350,31 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     lv_obj_set_style_text_align(s_renderer.text_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(s_renderer.text_label);
     lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
+
+    // Create per-page background panels - these "paint over" old content
+    // IMPORTANT: Created during init to avoid top-left corner bug
+    ESP_LOGI(TAG, "Creating per-page background panels...");
+
+    // Helper macro to create a full-screen black background panel
+    #define CREATE_PAGE_BG(var) do { \
+        var = lv_obj_create(scr); \
+        lv_obj_remove_style_all(var); \
+        lv_obj_set_size(var, s_renderer.width, s_renderer.height); \
+        lv_obj_set_pos(var, 0, 0); \
+        lv_obj_set_style_bg_color(var, lv_color_hex(BG_COLOR), 0); \
+        lv_obj_set_style_bg_opa(var, LV_OPA_COVER, 0); \
+        lv_obj_add_flag(var, LV_OBJ_FLAG_HIDDEN); \
+    } while(0)
+
+    CREATE_PAGE_BG(s_weather_bg);
+    CREATE_PAGE_BG(s_timer_bg);
+    CREATE_PAGE_BG(s_clock_bg);
+    CREATE_PAGE_BG(s_calendar_bg);
+    CREATE_PAGE_BG(s_subway_bg);
+    CREATE_PAGE_BG(s_animation_bg);
+
+    #undef CREATE_PAGE_BG
+    ESP_LOGI(TAG, "Background panels created");
 
     bsp_display_unlock();
 
@@ -1627,6 +1688,25 @@ static void set_dizzy_internal(bool dizzy)
     }
 }
 
+// Distressed mode: shows wavy mouth but keeps eyes normal (for orientation detection)
+// Auto-clears after 10 seconds
+static void set_distressed_internal(bool distressed)
+{
+    if (distressed && !s_renderer.is_distressed) {
+        // Start distressed state
+        s_renderer.is_distressed = true;
+        s_renderer.distressed_start_time = esp_timer_get_time() / 1000;
+        s_renderer.distressed_wobble = 0.0f;
+        s_renderer.last_mouth_curve = -1000;  // Force redraw
+        ESP_LOGI(TAG, "Distressed mode ON!");
+    } else if (!distressed && s_renderer.is_distressed) {
+        // End distressed state
+        s_renderer.is_distressed = false;
+        s_renderer.last_mouth_curve = -1000;
+        ESP_LOGI(TAG, "Distressed mode OFF");
+    }
+}
+
 void face_renderer_set_dizzy(bool dizzy)
 {
     if (!s_renderer.initialized) {
@@ -1642,6 +1722,23 @@ void face_renderer_set_dizzy(bool dizzy)
 bool face_renderer_is_dizzy(void)
 {
     return s_renderer.is_dizzy;
+}
+
+void face_renderer_set_distressed(bool distressed)
+{
+    if (!s_renderer.initialized) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        set_distressed_internal(distressed);
+        xSemaphoreGive(s_renderer.mutex);
+    }
+}
+
+bool face_renderer_is_distressed(void)
+{
+    return s_renderer.is_distressed;
 }
 
 void face_renderer_show_text(const char *text, font_size_t size,
@@ -1973,18 +2070,24 @@ static void hide_all_screen_elements(void)
     s_renderer.target_pet_offset = 0.0f;
     s_renderer.cat_mode = false;
 
-    // Hide face elements - move off-screen AND hide to ensure LVGL clears the area
+    // Hide face elements - move ALL off-screen AND hide to ensure LVGL clears the area
     // Moving off-screen forces LVGL to redraw the old position with background
+    // IMPORTANT: Both move AND hide are required for proper dirty rectangle updates
     lv_obj_set_pos(s_renderer.left_eye, -200, -200);
     lv_obj_set_pos(s_renderer.right_eye, -200, -200);
     lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
 
+    // Mouth elements - move ALL off-screen
     lv_obj_set_pos(s_renderer.mouth_arc, -200, -200);
     lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.mouth_line) {
+        lv_obj_set_pos(s_renderer.mouth_line, -200, -200);
+        lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
+    }
     for (int i = 0; i < 5; i++) {
         if (s_renderer.mouth_dots[i]) {
+            lv_obj_set_pos(s_renderer.mouth_dots[i], -200, -200);
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1996,46 +2099,114 @@ static void hide_all_screen_elements(void)
         lv_obj_set_pos(s_renderer.cat_arc_bottom, -200, -200);
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
     }
+    // Whiskers - move off-screen
     for (int i = 0; i < 6; i++) {
         if (s_renderer.whisker_lines[i]) {
+            lv_obj_set_pos(s_renderer.whisker_lines[i], -200, -200);
             lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_renderer.left_brow) lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.right_brow) lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.left_sparkle) lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.right_sparkle) lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.mouth_bg) lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+    // Brows, sparkles, mouth_bg - move off-screen
+    if (s_renderer.left_brow) {
+        lv_obj_set_pos(s_renderer.left_brow, -200, -200);
+        lv_obj_add_flag(s_renderer.left_brow, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_renderer.right_brow) {
+        lv_obj_set_pos(s_renderer.right_brow, -200, -200);
+        lv_obj_add_flag(s_renderer.right_brow, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_renderer.left_sparkle) {
+        lv_obj_set_pos(s_renderer.left_sparkle, -200, -200);
+        lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_renderer.right_sparkle) {
+        lv_obj_set_pos(s_renderer.right_sparkle, -200, -200);
+        lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_renderer.mouth_bg) {
+        lv_obj_set_pos(s_renderer.mouth_bg, -200, -200);
+        lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+    }
     if (s_renderer.wavy_mouth) {
         lv_obj_set_pos(s_renderer.wavy_mouth, -200, -200);
         lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Hide text label
+    // Hide text label - move off-screen
+    lv_obj_set_pos(s_renderer.text_label, -200, -200);
     lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
 
-    // Hide timer elements
-    if (s_timer_arc) lv_obj_add_flag(s_timer_arc, LV_OBJ_FLAG_HIDDEN);
-    if (s_timer_label_small) lv_obj_add_flag(s_timer_label_small, LV_OBJ_FLAG_HIDDEN);
-    if (s_timer_btn_start) lv_obj_add_flag(s_timer_btn_start, LV_OBJ_FLAG_HIDDEN);
-    if (s_timer_btn_pause) lv_obj_add_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
-
-    // Hide clock elements
-    if (s_clock_ampm_label) lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
-    if (s_clock_date_label) lv_obj_add_flag(s_clock_date_label, LV_OBJ_FLAG_HIDDEN);
-    if (s_clock_card) lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
-
-    // Hide subway elements
-    if (s_subway_card) lv_obj_add_flag(s_subway_card, LV_OBJ_FLAG_HIDDEN);
-    if (s_subway_circle) lv_obj_add_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
-    if (s_subway_line_label) lv_obj_add_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
-    if (s_subway_station_label) lv_obj_add_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
-    for (int i = 0; i < 3; i++) {
-        if (s_subway_time_labels[i]) lv_obj_add_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+    // Hide timer elements - move off-screen
+    if (s_timer_arc) {
+        lv_obj_set_pos(s_timer_arc, -400, -400);
+        lv_obj_add_flag(s_timer_arc, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_timer_label_small) {
+        lv_obj_set_pos(s_timer_label_small, -200, -200);
+        lv_obj_add_flag(s_timer_label_small, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_timer_btn_start) {
+        lv_obj_set_pos(s_timer_btn_start, -200, -200);
+        lv_obj_add_flag(s_timer_btn_start, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_timer_btn_pause) {
+        lv_obj_set_pos(s_timer_btn_pause, -200, -200);
+        lv_obj_add_flag(s_timer_btn_pause, LV_OBJ_FLAG_HIDDEN);
     }
 
-    // Hide shared screen tag
-    if (s_screen_tag_label) lv_obj_add_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
+    // Hide weather elements - move off-screen
+    if (s_weather_desc_label) {
+        lv_obj_set_pos(s_weather_desc_label, -200, -200);
+        lv_obj_add_flag(s_weather_desc_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_weather_card) {
+        lv_obj_set_pos(s_weather_card, -600, -600);
+        lv_obj_add_flag(s_weather_card, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Hide clock elements - move off-screen
+    if (s_clock_ampm_label) {
+        lv_obj_set_pos(s_clock_ampm_label, -200, -200);
+        lv_obj_add_flag(s_clock_ampm_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_clock_date_label) {
+        lv_obj_set_pos(s_clock_date_label, -200, -200);
+        lv_obj_add_flag(s_clock_date_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_clock_card) {
+        lv_obj_set_pos(s_clock_card, -600, -600);
+        lv_obj_add_flag(s_clock_card, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    // Hide subway elements - move off-screen
+    if (s_subway_card) {
+        lv_obj_set_pos(s_subway_card, -600, -600);
+        lv_obj_add_flag(s_subway_card, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_subway_circle) {
+        lv_obj_set_pos(s_subway_circle, -200, -200);
+        lv_obj_add_flag(s_subway_circle, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_subway_line_label) {
+        lv_obj_set_pos(s_subway_line_label, -200, -200);
+        lv_obj_add_flag(s_subway_line_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_subway_station_label) {
+        lv_obj_set_pos(s_subway_station_label, -200, -200);
+        lv_obj_add_flag(s_subway_station_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    for (int i = 0; i < 3; i++) {
+        if (s_subway_time_labels[i]) {
+            lv_obj_set_pos(s_subway_time_labels[i], -200, -200);
+            lv_obj_add_flag(s_subway_time_labels[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
+    // Hide shared screen tag - move off-screen
+    if (s_screen_tag_label) {
+        lv_obj_set_pos(s_screen_tag_label, -200, -200);
+        lv_obj_add_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Clear dynamic elements (deletes widgets, not just hides)
     clear_weather_icons();
@@ -2043,16 +2214,11 @@ static void hide_all_screen_elements(void)
     clear_calendar_cards();
     clear_pixel_objects();
 
-    // Force a full-screen redraw by creating a temp panel, refreshing, then deleting
-    lv_obj_t *scr = lv_scr_act();
-    lv_obj_t *clear_panel = lv_obj_create(scr);
-    lv_obj_remove_style_all(clear_panel);
-    lv_obj_set_size(clear_panel, s_renderer.width, s_renderer.height);
-    lv_obj_set_pos(clear_panel, 0, 0);
-    lv_obj_set_style_bg_color(clear_panel, lv_color_hex(BG_COLOR), 0);
-    lv_obj_set_style_bg_opa(clear_panel, LV_OPA_COVER, 0);
-    lv_refr_now(NULL);  // Force immediate refresh with the panel covering everything
-    lv_obj_delete(clear_panel);  // Then delete it - new widgets will draw on top
+
+    // NOTE: DO NOT create full-screen background panels here!
+    // Creating/modifying full-screen elements during mode switching causes the
+    // "top-left corner rendering bug" where content gets scaled/squished into corner.
+    // See SCREEN_ARTIFACT_ISSUES_AND_FIXES.md for details.
 }
 
 // Draw sun icon (circle + rays around it) - Apple Weather style
@@ -2912,8 +3078,8 @@ void face_renderer_clear_display(void)
             lv_obj_clear_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
 
-            // Update background
-            lv_obj_set_style_bg_color(lv_screen_active(), lv_color_hex(BG_COLOR), 0);
+            // NOTE: Do NOT set screen background here - causes top-left corner rendering bug
+            // Background is set correctly during init and shouldn't be modified during mode switches
 
             // Force full redraw
             s_renderer.last_eye_x = -1000;
