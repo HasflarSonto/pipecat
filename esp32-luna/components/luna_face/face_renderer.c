@@ -77,8 +77,8 @@ static const char *TAG = "face_renderer";
 #define STYLE_BUTTON_WARN   COLOR_ACCENT_ORANGE   // Orange for warning/pause
 #define STYLE_BUTTON_INACTIVE COLOR_CARD_BG       // Card bg for inactive buttons
 
-// Animation timing - VERY SLOW to avoid SPI overflow
-#define ANIMATION_PERIOD_MS    200      // ~5 FPS to reduce SPI load
+// Animation timing
+#define ANIMATION_PERIOD_MS    50       // ~20 FPS (buffer fix allows faster refresh)
 #define RENDER_TASK_STACK_SIZE (8 * 1024)
 #define RENDER_TASK_PRIORITY   3
 #define RENDER_TASK_CORE       1
@@ -91,8 +91,8 @@ static const char *TAG = "face_renderer";
 #define PET_DECAY_SPEED            6.0f   // How fast face returns to neutral
 
 // Petting parameters
-#define PET_SENSITIVITY            0.5f   // How much face moves per pixel of touch movement
-#define PET_MAX_OFFSET             20.0f  // Maximum face displacement from petting (in pixels)
+#define PET_SENSITIVITY            0.4f  // How much face moves per pixel of touch movement
+#define PET_MAX_OFFSET             15.0f  // Maximum face displacement from petting (in pixels)
 
 // Blink timing
 #define BLINK_MIN_INTERVAL_MS      2000
@@ -192,8 +192,10 @@ static struct {
     int last_touch_x;
     int last_touch_y;
     bool touch_was_eye_poke;  // True if current touch started on an eye
+    float pet_offset_x;
     float pet_offset_y;
-    float target_pet_offset;
+    float target_pet_offset_x;
+    float target_pet_offset_y;
     int64_t last_pet_time;
 
     // Blink state
@@ -525,7 +527,7 @@ static void update_face_widgets(void)
     int gaze_y_offset = (int)((s_renderer.gaze_y - 0.5f) * 2.0f * gaze_range_y);
 
     // Face offset (includes gaze tracking + petting)
-    int offset_x = (int)s_renderer.face_offset_x;
+    int offset_x = (int)(s_renderer.face_offset_x + s_renderer.pet_offset_x);
     int offset_y = (int)(s_renderer.face_offset_y + s_renderer.pet_offset_y);
 
     // Think offset (look to side)
@@ -1187,24 +1189,35 @@ static void update_petting(float delta_time)
         // Here we only handle petting (dragging on face area)
 
         if (s_renderer.touch_active) {
-            // Calculate vertical movement delta for petting
+            // Calculate movement delta for petting (both X and Y)
+            int delta_x = point.x - s_renderer.last_touch_x;
             int delta_y = point.y - s_renderer.last_touch_y;
 
             // Only update if movement exceeds threshold (reduces artifacts)
-            if (abs(delta_y) > 3) {
-                // Apply sensitivity and clamp
-                float offset = delta_y * PET_SENSITIVITY;
-                s_renderer.target_pet_offset += offset;
-
-                // Clamp target offset
-                if (s_renderer.target_pet_offset > PET_MAX_OFFSET) {
-                    s_renderer.target_pet_offset = PET_MAX_OFFSET;
-                } else if (s_renderer.target_pet_offset < -PET_MAX_OFFSET) {
-                    s_renderer.target_pet_offset = -PET_MAX_OFFSET;
+            if (abs(delta_x) > 3 || abs(delta_y) > 3) {
+                // Apply sensitivity and clamp for X
+                if (abs(delta_x) > 3) {
+                    float offset_x = delta_x * PET_SENSITIVITY;
+                    s_renderer.target_pet_offset_x += offset_x;
+                    if (s_renderer.target_pet_offset_x > PET_MAX_OFFSET) {
+                        s_renderer.target_pet_offset_x = PET_MAX_OFFSET;
+                    } else if (s_renderer.target_pet_offset_x < -PET_MAX_OFFSET) {
+                        s_renderer.target_pet_offset_x = -PET_MAX_OFFSET;
+                    }
+                    s_renderer.last_touch_x = point.x;
                 }
 
-                // Update last position only when we actually moved
-                s_renderer.last_touch_y = point.y;
+                // Apply sensitivity and clamp for Y
+                if (abs(delta_y) > 3) {
+                    float offset_y = delta_y * PET_SENSITIVITY;
+                    s_renderer.target_pet_offset_y += offset_y;
+                    if (s_renderer.target_pet_offset_y > PET_MAX_OFFSET) {
+                        s_renderer.target_pet_offset_y = PET_MAX_OFFSET;
+                    } else if (s_renderer.target_pet_offset_y < -PET_MAX_OFFSET) {
+                        s_renderer.target_pet_offset_y = -PET_MAX_OFFSET;
+                    }
+                    s_renderer.last_touch_y = point.y;
+                }
             }
         } else {
             // First touch - store position for petting
@@ -1228,7 +1241,8 @@ static void update_petting(float delta_time)
         // Touch released - decay the offset back to zero
         if (s_renderer.touch_active) {
             // Just released - start decay
-            s_renderer.target_pet_offset = 0.0f;
+            s_renderer.target_pet_offset_x = 0.0f;
+            s_renderer.target_pet_offset_y = 0.0f;
 
             // Restore to happy face after petting (cat enjoyed it!)
             if (s_renderer.cat_mode) {
@@ -1243,16 +1257,27 @@ static void update_petting(float delta_time)
 
     // Smoothly interpolate towards target (slower to reduce artifacts)
     float speed = s_renderer.touch_active ? PET_RESPONSE_SPEED : PET_DECAY_SPEED;
-    float new_offset = lerp(s_renderer.pet_offset_y, s_renderer.target_pet_offset,
-                            delta_time * speed);
 
-    // Only update if change is significant (reduces artifacts from tiny movements)
-    if (fabsf(new_offset - s_renderer.pet_offset_y) > 1.0f ||
-        (!s_renderer.touch_active && fabsf(new_offset) < 1.0f)) {
-        s_renderer.pet_offset_y = new_offset;
+    // Interpolate X
+    float new_offset_x = lerp(s_renderer.pet_offset_x, s_renderer.target_pet_offset_x,
+                              delta_time * speed);
+    if (fabsf(new_offset_x - s_renderer.pet_offset_x) > 1.0f ||
+        (!s_renderer.touch_active && fabsf(new_offset_x) < 1.0f)) {
+        s_renderer.pet_offset_x = new_offset_x;
+    }
+
+    // Interpolate Y
+    float new_offset_y = lerp(s_renderer.pet_offset_y, s_renderer.target_pet_offset_y,
+                              delta_time * speed);
+    if (fabsf(new_offset_y - s_renderer.pet_offset_y) > 1.0f ||
+        (!s_renderer.touch_active && fabsf(new_offset_y) < 1.0f)) {
+        s_renderer.pet_offset_y = new_offset_y;
     }
 
     // Snap to zero if very small and not touching
+    if (!s_renderer.touch_active && fabsf(s_renderer.pet_offset_x) < 1.0f) {
+        s_renderer.pet_offset_x = 0.0f;
+    }
     if (!s_renderer.touch_active && fabsf(s_renderer.pet_offset_y) < 1.0f) {
         s_renderer.pet_offset_y = 0.0f;
     }
@@ -1631,7 +1656,7 @@ int face_renderer_hit_test_eye(int x, int y)
     }
 
     // Get current eye positions (base + offsets)
-    int offset_x = (int)s_renderer.face_offset_x;
+    int offset_x = (int)(s_renderer.face_offset_x + s_renderer.pet_offset_x);
     int offset_y = (int)(s_renderer.face_offset_y + s_renderer.pet_offset_y);
 
     // Calculate eye dimensions
@@ -2066,8 +2091,10 @@ static void hide_all_screen_elements(void)
     s_renderer.target_right_wink = 0.0f;
     s_renderer.left_poke_time = 0;
     s_renderer.right_poke_time = 0;
+    s_renderer.pet_offset_x = 0.0f;
     s_renderer.pet_offset_y = 0.0f;
-    s_renderer.target_pet_offset = 0.0f;
+    s_renderer.target_pet_offset_x = 0.0f;
+    s_renderer.target_pet_offset_y = 0.0f;
     s_renderer.cat_mode = false;
 
     // Hide face elements - move ALL off-screen AND hide to ensure LVGL clears the area
