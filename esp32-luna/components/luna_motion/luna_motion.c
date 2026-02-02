@@ -52,8 +52,8 @@ typedef struct {
 
 // Orientation detection thresholds
 #define GRAVITY_THRESHOLD       7.0f    // m/s^2 - threshold to detect gravity on an axis
-#define ON_BACK_THRESHOLD       8.8f    // m/s^2 - threshold for on_back (requires nearly flat)
-#define UPSIDE_DOWN_THRESHOLD   5.0f    // m/s^2 - lower threshold for upside_down (fills gap with on_back)
+#define ON_BACK_THRESHOLD       9.0f    // m/s^2 - threshold for on_back (requires nearly flat)
+#define UPSIDE_DOWN_THRESHOLD   4.0f    // m/s^2 - threshold for upside_down (triggers distress)
 #define ORIENTATION_DEBOUNCE_MS 500     // ms - debounce time before reporting change
 #define ORIENTATION_STABLE_COUNT 10     // samples needed to confirm orientation
 

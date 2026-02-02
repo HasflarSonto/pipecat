@@ -107,8 +107,8 @@ static void on_orientation_change(luna_orientation_t orientation)
         return;
     }
 
-    if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_UPSIDE_DOWN) {
-        // Device is lying flat or upside down - trigger distressed effect (wavy mouth, normal eyes)
+    if (orientation == ORIENTATION_UPSIDE_DOWN) {
+        // Device is upside down - trigger distressed effect (wavy mouth, normal eyes)
         if (!s_is_distressed) {
             s_is_distressed = true;
             face_renderer_set_distressed(true);
@@ -145,7 +145,7 @@ static void show_page(page_t page)
             face_renderer_set_emotion(EMOTION_EYES_ONLY);
             // Check current orientation and apply distressed if already lying down
             luna_orientation_t orientation = luna_motion_get_orientation();
-            if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_UPSIDE_DOWN) {
+            if (orientation == ORIENTATION_UPSIDE_DOWN) {
                 s_is_distressed = true;
                 face_renderer_set_distressed(true);
                 ESP_LOGI(TAG, "Luna distressed on page entry (orientation=%d)", orientation);
