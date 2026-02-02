@@ -609,12 +609,9 @@ static void update_face_widgets(void)
                  s_renderer.last_mouth_curve, curve_category, params->mouth_curve);
 
         // Hide all mouth widgets first (simple hide - no invalidation to avoid artifacts)
-        // Note: wavy_mouth is handled separately by is_dizzy check below
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        if (!s_renderer.is_dizzy) {
-            lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
-        }
+        lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
 
         for (int i = 0; i < 5; i++) {
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
@@ -627,43 +624,13 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
-        // Skip all normal mouth rendering during dizzy mode - only show wavy mouth
-        if (!s_renderer.is_dizzy) {
-            if (curve_category == -100) {
-                // Eyes only - no mouth, hide the background too
-                lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
-                ESP_LOGI(TAG, "Eyes only mode - mouth hidden");
-            } else if (curve_category == -50) {
-            // 人 (ren) style mouth: two quarter arcs meeting at bottom
-            // Like 人 character - meet at bottom, curve up and outward
-            int arc_size = 50;
-            int arc_thickness = (int)(5 * SCALE_Y);
-            int center_x = s_renderer.width / 2 + offset_x;
-            int ren_y = mouth_y;
-            int overlap = 2;  // Tiny overlap so arcs blend into one
-
-            // Left arc - curves from meeting point up-left (outward)
-            lv_obj_set_size(s_renderer.cat_arc_top, arc_size, arc_size);
-            int left_arc_x = center_x - arc_size + overlap;  // Move right to overlap
-            int left_arc_y = ren_y - arc_size / 2;
-            lv_obj_set_pos(s_renderer.cat_arc_top, left_arc_x, left_arc_y);
-            lv_arc_set_bg_angles(s_renderer.cat_arc_top, 0, 90);
-            lv_arc_set_angles(s_renderer.cat_arc_top, 0, 90);
-            lv_obj_set_style_arc_width(s_renderer.cat_arc_top, arc_thickness, LV_PART_INDICATOR);
-            lv_obj_remove_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
-
-            // Right arc - curves from meeting point up-right (outward)
-            lv_obj_set_size(s_renderer.cat_arc_bottom, arc_size, arc_size);
-            int right_arc_x = center_x - overlap;  // Move left to overlap
-            int right_arc_y = ren_y - arc_size / 2;
-            lv_obj_set_pos(s_renderer.cat_arc_bottom, right_arc_x, right_arc_y);
-            lv_arc_set_bg_angles(s_renderer.cat_arc_bottom, 90, 180);
-            lv_arc_set_angles(s_renderer.cat_arc_bottom, 90, 180);
-            lv_obj_set_style_arc_width(s_renderer.cat_arc_bottom, arc_thickness, LV_PART_INDICATOR);
-            lv_obj_remove_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
-
-            ESP_LOGI(TAG, "Ren 人 mouth at y=%d", ren_y);
-            } else if (curve_category == 100) {
+        if (curve_category == -100) {
+            // Eyes only - hide all mouth elements completely
+            lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+            // Keep mouth_curve at current value to avoid triggering re-render on every frame
+        } else if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
             // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise
 
@@ -765,7 +732,7 @@ static void update_face_widgets(void)
 
             ESP_LOGI(TAG, "Cat :3 with whiskers at center_x=%d, cat_y=%d", center_x, cat_y);
 
-            } else if (curve_category == 50) {
+        } else if (curve_category == 50) {
             // Surprised O - circular mouth using mouth_line
             int o_size = (int)(35 * SCALE_X);
             lv_obj_set_size(s_renderer.mouth_line, o_size, o_size);
@@ -774,7 +741,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Surprised O mouth at y=%d, size=%d", mouth_y, o_size);
 
-            } else if (curve_category == 0) {
+        } else if (curve_category == 0) {
             // Neutral - straight line rectangle
             int line_len = (int)(mouth_width * 1.5f);
             lv_obj_set_size(s_renderer.mouth_line, line_len, line_width);
@@ -783,7 +750,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Neutral mouth at y=%d, len=%d", mouth_y, line_len);
 
-            } else if (curve_category == 1) {
+        } else if (curve_category == 1) {
             // Smile - arc curving downward (like a U)
             // Use same pattern as cat arcs: square size, 0-180° angles
             int arc_size = 60;  // Same approach as cat arcs (which use 40)
@@ -797,7 +764,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Smile (arc) at y=%d, size=%d", mouth_y, arc_size);
 
-            } else {
+        } else {
             // Frown - arc curving upward (inverted U)
             // Use same pattern as cat arcs: square size, 0-180° angles
             int arc_size = 60;  // Same approach as cat arcs (which use 40)
@@ -810,8 +777,7 @@ static void update_face_widgets(void)
             lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Frown (arc) at y=%d, size=%d", mouth_y, arc_size);
-            }
-        } // End of !is_dizzy block
+        }
 
         s_renderer.last_mouth_curve = curve_category;
     }
@@ -2007,9 +1973,14 @@ static void hide_all_screen_elements(void)
     s_renderer.target_pet_offset = 0.0f;
     s_renderer.cat_mode = false;
 
-    // Hide face elements
+    // Hide face elements - move off-screen AND hide to ensure LVGL clears the area
+    // Moving off-screen forces LVGL to redraw the old position with background
+    lv_obj_set_pos(s_renderer.left_eye, -200, -200);
+    lv_obj_set_pos(s_renderer.right_eye, -200, -200);
     lv_obj_add_flag(s_renderer.left_eye, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_renderer.right_eye, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_set_pos(s_renderer.mouth_arc, -200, -200);
     lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < 5; i++) {
@@ -2017,8 +1988,14 @@ static void hide_all_screen_elements(void)
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    if (s_renderer.cat_arc_top) lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.cat_arc_bottom) lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.cat_arc_top) {
+        lv_obj_set_pos(s_renderer.cat_arc_top, -200, -200);
+        lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (s_renderer.cat_arc_bottom) {
+        lv_obj_set_pos(s_renderer.cat_arc_bottom, -200, -200);
+        lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
+    }
     for (int i = 0; i < 6; i++) {
         if (s_renderer.whisker_lines[i]) {
             lv_obj_add_flag(s_renderer.whisker_lines[i], LV_OBJ_FLAG_HIDDEN);
@@ -2029,7 +2006,10 @@ static void hide_all_screen_elements(void)
     if (s_renderer.left_sparkle) lv_obj_add_flag(s_renderer.left_sparkle, LV_OBJ_FLAG_HIDDEN);
     if (s_renderer.right_sparkle) lv_obj_add_flag(s_renderer.right_sparkle, LV_OBJ_FLAG_HIDDEN);
     if (s_renderer.mouth_bg) lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
-    if (s_renderer.wavy_mouth) lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
+    if (s_renderer.wavy_mouth) {
+        lv_obj_set_pos(s_renderer.wavy_mouth, -200, -200);
+        lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
+    }
 
     // Hide text label
     lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
@@ -2057,10 +2037,22 @@ static void hide_all_screen_elements(void)
     // Hide shared screen tag
     if (s_screen_tag_label) lv_obj_add_flag(s_screen_tag_label, LV_OBJ_FLAG_HIDDEN);
 
-    // Clear dynamic elements
+    // Clear dynamic elements (deletes widgets, not just hides)
     clear_weather_icons();
     clear_particles();
     clear_calendar_cards();
+    clear_pixel_objects();
+
+    // Force a full-screen redraw by creating a temp panel, refreshing, then deleting
+    lv_obj_t *scr = lv_scr_act();
+    lv_obj_t *clear_panel = lv_obj_create(scr);
+    lv_obj_remove_style_all(clear_panel);
+    lv_obj_set_size(clear_panel, s_renderer.width, s_renderer.height);
+    lv_obj_set_pos(clear_panel, 0, 0);
+    lv_obj_set_style_bg_color(clear_panel, lv_color_hex(BG_COLOR), 0);
+    lv_obj_set_style_bg_opa(clear_panel, LV_OPA_COVER, 0);
+    lv_refr_now(NULL);  // Force immediate refresh with the panel covering everything
+    lv_obj_delete(clear_panel);  // Then delete it - new widgets will draw on top
 }
 
 // Draw sun icon (circle + rays around it) - Apple Weather style
