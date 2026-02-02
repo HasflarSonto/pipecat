@@ -84,12 +84,14 @@ esp_err_t luna_motion_init(const luna_motion_config_t *config)
     // Initialize QMI8658 IMU sensor
     ESP_LOGI(TAG, "Initializing QMI8658 IMU sensor...");
 
-    // Get I2C bus handle from BSP
+    // Get I2C bus handle from BSP (must be called after bsp_display_start)
     i2c_master_bus_handle_t bus_handle = bsp_i2c_get_handle();
     if (bus_handle == NULL) {
-        ESP_LOGE(TAG, "Failed to get I2C bus handle");
+        ESP_LOGE(TAG, "Failed to get I2C bus handle - BSP may not be initialized");
+        ESP_LOGE(TAG, "Make sure face_renderer_init() is called before luna_motion_init()");
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Got I2C bus handle: %p", (void*)bus_handle);
 
     // Allocate IMU device
     s_motion.imu_dev = malloc(sizeof(qmi8658_dev_t));
@@ -112,7 +114,10 @@ esp_err_t luna_motion_init(const luna_motion_config_t *config)
     qmi8658_set_accel_odr(s_motion.imu_dev, QMI8658_ACCEL_ODR_500HZ);
     qmi8658_set_accel_unit_mps2(s_motion.imu_dev, true);  // Use m/s^2 units
 
-    ESP_LOGI(TAG, "IMU initialized successfully");
+    // Enable accelerometer (CTRL5 register - same as sample project)
+    qmi8658_write_register(s_motion.imu_dev, 0x0A, 0x03);  // QMI8658_CTRL5 = 0x0A
+
+    ESP_LOGI(TAG, "IMU initialized successfully (address=0x%02X)", QMI8658_ADDRESS_HIGH);
 #endif
 
     s_motion.initialized = true;
@@ -152,6 +157,9 @@ esp_err_t luna_motion_start(void)
         return ESP_OK;
     }
 
+    // Set running flag BEFORE creating task to avoid race condition
+    s_motion.running = true;
+
 #ifndef SIMULATOR
     // Create motion detection task
     BaseType_t ret = xTaskCreate(
@@ -165,11 +173,11 @@ esp_err_t luna_motion_start(void)
 
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "Failed to create motion task");
+        s_motion.running = false;
         return ESP_FAIL;
     }
 #endif
 
-    s_motion.running = true;
     ESP_LOGI(TAG, "Motion detection started");
     return ESP_OK;
 }
@@ -314,20 +322,35 @@ static void motion_task_func(void *pvParameters)
 {
     (void)pvParameters;
     qmi8658_data_t data;
+    int sample_count = 0;
 
     ESP_LOGI(TAG, "Motion task started");
 
     while (s_motion.running) {
-        // Check if data is ready
-        bool ready = false;
-        esp_err_t ret = qmi8658_is_data_ready(s_motion.imu_dev, &ready);
+        // Lock I2C bus (shared with touch controller)
+        if (bsp_display_lock(pdMS_TO_TICKS(10))) {
+            // Check if data is ready
+            bool ready = false;
+            esp_err_t ret = qmi8658_is_data_ready(s_motion.imu_dev, &ready);
 
-        if (ret == ESP_OK && ready) {
-            ret = qmi8658_read_sensor_data(s_motion.imu_dev, &data);
-            if (ret == ESP_OK) {
-                // Process the sample
-                process_accel_sample(data.accelX, data.accelY, data.accelZ);
+            if (ret == ESP_OK && ready) {
+                ret = qmi8658_read_sensor_data(s_motion.imu_dev, &data);
+                if (ret == ESP_OK) {
+                    // Log every 50 samples (~1 second at 50Hz) to verify it's working
+                    sample_count++;
+                    if (sample_count >= 50) {
+                        ESP_LOGI(TAG, "IMU: ax=%.2f ay=%.2f az=%.2f",
+                                 data.accelX, data.accelY, data.accelZ);
+                        sample_count = 0;
+                    }
+                    // Process the sample (outside lock to minimize lock time)
+                    bsp_display_unlock();
+                    process_accel_sample(data.accelX, data.accelY, data.accelZ);
+                    vTaskDelay(pdMS_TO_TICKS(MOTION_SAMPLE_PERIOD_MS));
+                    continue;
+                }
             }
+            bsp_display_unlock();
         }
 
         vTaskDelay(pdMS_TO_TICKS(MOTION_SAMPLE_PERIOD_MS));

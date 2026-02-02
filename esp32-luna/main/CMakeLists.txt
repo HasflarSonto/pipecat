@@ -12,5 +12,6 @@ idf_component_register(
         network
         audio
         luna_face
+        luna_motion
         power
 )

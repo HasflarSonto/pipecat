@@ -268,6 +268,7 @@ static struct {
 static void render_task_func(void *pvParameters);
 static void update_animation(float delta_time);
 static void update_petting(float delta_time);
+static void set_dizzy_internal(bool dizzy);
 static void update_face_widgets(void);
 static float get_blink_factor(void);
 static void timer_btn_start_click_cb(lv_event_t *e);
@@ -608,9 +609,12 @@ static void update_face_widgets(void)
                  s_renderer.last_mouth_curve, curve_category, params->mouth_curve);
 
         // Hide all mouth widgets first (simple hide - no invalidation to avoid artifacts)
+        // Note: wavy_mouth is handled separately by is_dizzy check below
         lv_obj_add_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
+        if (!s_renderer.is_dizzy) {
+            lv_obj_add_flag(s_renderer.wavy_mouth, LV_OBJ_FLAG_HIDDEN);
+        }
 
         for (int i = 0; i < 5; i++) {
             lv_obj_add_flag(s_renderer.mouth_dots[i], LV_OBJ_FLAG_HIDDEN);
@@ -623,8 +627,14 @@ static void update_face_widgets(void)
         lv_obj_add_flag(s_renderer.cat_arc_top, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
-        if (curve_category == -100) {
-            // Eyes only - show 人 (ren) style mouth: two quarter arcs meeting at bottom
+        // Skip all normal mouth rendering during dizzy mode - only show wavy mouth
+        if (!s_renderer.is_dizzy) {
+            if (curve_category == -100) {
+                // Eyes only - no mouth, hide the background too
+                lv_obj_add_flag(s_renderer.mouth_bg, LV_OBJ_FLAG_HIDDEN);
+                ESP_LOGI(TAG, "Eyes only mode - mouth hidden");
+            } else if (curve_category == -50) {
+            // 人 (ren) style mouth: two quarter arcs meeting at bottom
             // Like 人 character - meet at bottom, curve up and outward
             int arc_size = 50;
             int arc_thickness = (int)(5 * SCALE_Y);
@@ -653,7 +663,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.cat_arc_bottom, LV_OBJ_FLAG_HIDDEN);
 
             ESP_LOGI(TAG, "Ren 人 mouth at y=%d", ren_y);
-        } else if (curve_category == 100) {
+            } else if (curve_category == 100) {
             // Cat face ":3" mouth - two small arcs forming sideways "3"
             // LVGL arc: 0° is right (3 o'clock), angles increase counter-clockwise
 
@@ -755,7 +765,7 @@ static void update_face_widgets(void)
 
             ESP_LOGI(TAG, "Cat :3 with whiskers at center_x=%d, cat_y=%d", center_x, cat_y);
 
-        } else if (curve_category == 50) {
+            } else if (curve_category == 50) {
             // Surprised O - circular mouth using mouth_line
             int o_size = (int)(35 * SCALE_X);
             lv_obj_set_size(s_renderer.mouth_line, o_size, o_size);
@@ -764,7 +774,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Surprised O mouth at y=%d, size=%d", mouth_y, o_size);
 
-        } else if (curve_category == 0) {
+            } else if (curve_category == 0) {
             // Neutral - straight line rectangle
             int line_len = (int)(mouth_width * 1.5f);
             lv_obj_set_size(s_renderer.mouth_line, line_len, line_width);
@@ -773,7 +783,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_line, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Neutral mouth at y=%d, len=%d", mouth_y, line_len);
 
-        } else if (curve_category == 1) {
+            } else if (curve_category == 1) {
             // Smile - arc curving downward (like a U)
             // Use same pattern as cat arcs: square size, 0-180° angles
             int arc_size = 60;  // Same approach as cat arcs (which use 40)
@@ -787,7 +797,7 @@ static void update_face_widgets(void)
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Smile (arc) at y=%d, size=%d", mouth_y, arc_size);
 
-        } else {
+            } else {
             // Frown - arc curving upward (inverted U)
             // Use same pattern as cat arcs: square size, 0-180° angles
             int arc_size = 60;  // Same approach as cat arcs (which use 40)
@@ -800,7 +810,8 @@ static void update_face_widgets(void)
             lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Frown (arc) at y=%d, size=%d", mouth_y, arc_size);
-        }
+            }
+        } // End of !is_dizzy block
 
         s_renderer.last_mouth_curve = curve_category;
     }
@@ -1076,8 +1087,8 @@ static void update_animation(float delta_time)
     if (s_renderer.is_dizzy) {
         int64_t elapsed = current_time - s_renderer.dizzy_start_time;
         if (elapsed > DIZZY_DURATION_MS) {
-            // Auto-recover from dizzy after duration
-            face_renderer_set_dizzy(false);
+            // Auto-recover from dizzy after duration (use internal - mutex already held)
+            set_dizzy_internal(false);
         } else {
             // Update wobble phase
             s_renderer.dizzy_wobble += delta_time * DIZZY_WOBBLE_SPEED;
@@ -1627,6 +1638,29 @@ int face_renderer_hit_test_eye(int x, int y)
     return -1;  // Not on eye
 }
 
+// Internal helper - assumes mutex is already held
+static void set_dizzy_internal(bool dizzy)
+{
+    if (dizzy && !s_renderer.is_dizzy) {
+        // Start dizzy state
+        s_renderer.is_dizzy = true;
+        s_renderer.dizzy_start_time = esp_timer_get_time() / 1000;
+        s_renderer.dizzy_wobble = 0.0f;
+        s_renderer.pre_dizzy_emotion = s_renderer.target_emotion;
+        s_renderer.target_emotion = EMOTION_DIZZY;
+        s_renderer.emotion_transition = 0.0f;
+        s_renderer.last_mouth_curve = -1000;  // Force redraw
+        ESP_LOGI(TAG, "Dizzy mode ON!");
+    } else if (!dizzy && s_renderer.is_dizzy) {
+        // End dizzy state
+        s_renderer.is_dizzy = false;
+        s_renderer.target_emotion = s_renderer.pre_dizzy_emotion;
+        s_renderer.emotion_transition = 0.0f;
+        s_renderer.last_mouth_curve = -1000;
+        ESP_LOGI(TAG, "Dizzy mode OFF, restoring %s", emotion_to_string(s_renderer.target_emotion));
+    }
+}
+
 void face_renderer_set_dizzy(bool dizzy)
 {
     if (!s_renderer.initialized) {
@@ -1634,24 +1668,7 @@ void face_renderer_set_dizzy(bool dizzy)
     }
 
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        if (dizzy && !s_renderer.is_dizzy) {
-            // Start dizzy state
-            s_renderer.is_dizzy = true;
-            s_renderer.dizzy_start_time = esp_timer_get_time() / 1000;
-            s_renderer.dizzy_wobble = 0.0f;
-            s_renderer.pre_dizzy_emotion = s_renderer.target_emotion;
-            s_renderer.target_emotion = EMOTION_DIZZY;
-            s_renderer.emotion_transition = 0.0f;
-            s_renderer.last_mouth_curve = -1000;  // Force redraw
-            ESP_LOGI(TAG, "Dizzy mode ON!");
-        } else if (!dizzy && s_renderer.is_dizzy) {
-            // End dizzy state
-            s_renderer.is_dizzy = false;
-            s_renderer.target_emotion = s_renderer.pre_dizzy_emotion;
-            s_renderer.emotion_transition = 0.0f;
-            s_renderer.last_mouth_curve = -1000;
-            ESP_LOGI(TAG, "Dizzy mode OFF, restoring %s", emotion_to_string(s_renderer.target_emotion));
-        }
+        set_dizzy_internal(dizzy);
         xSemaphoreGive(s_renderer.mutex);
     }
 }

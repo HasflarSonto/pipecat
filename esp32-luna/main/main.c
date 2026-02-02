@@ -17,6 +17,7 @@
 
 #include "face_renderer.h"
 #include "pmu_manager.h"
+#include "luna_motion.h"
 
 static const char *TAG = "luna_main";
 
@@ -75,6 +76,19 @@ static bool poll_boot_button(void)
 
     s_button_last_state = current_state;
     return false;
+}
+
+/**
+ * @brief Callback when shake is detected
+ */
+static void on_shake_detected(float intensity)
+{
+    ESP_LOGI(TAG, "Shake detected! intensity=%.2f", intensity);
+
+    // Only trigger dizzy if we're on the face page
+    if (s_current_page == PAGE_FACE) {
+        face_renderer_set_dizzy(true);
+    }
 }
 
 /**
@@ -171,6 +185,27 @@ void app_main(void)
     ESP_ERROR_CHECK(face_renderer_init(&face_config));
     ESP_ERROR_CHECK(face_renderer_start());
     ESP_LOGI(TAG, "Face renderer started");
+
+    // Initialize motion detection (shake -> dizzy effect)
+    ESP_LOGI(TAG, "Initializing motion detection...");
+    luna_motion_config_t motion_config = {
+        .shake_threshold = 10.0f,       // Moderate threshold (m/s^2) - requires deliberate shake
+        .shake_count_trigger = 3,       // 3 direction changes needed
+        .shake_window_ms = 600,         // Reasonable window for detection
+        .cooldown_ms = 2000,            // 2 second cooldown
+        .on_shake = on_shake_detected,  // Callback
+    };
+    ret = luna_motion_init(&motion_config);
+    if (ret == ESP_OK) {
+        ret = luna_motion_start();
+        if (ret == ESP_OK) {
+            ESP_LOGI(TAG, "Motion detection started");
+        } else {
+            ESP_LOGW(TAG, "Failed to start motion detection: %s", esp_err_to_name(ret));
+        }
+    } else {
+        ESP_LOGW(TAG, "Failed to init motion detection: %s", esp_err_to_name(ret));
+    }
 
     // Initialize boot button
     init_boot_button();

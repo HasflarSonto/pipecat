@@ -526,6 +526,93 @@ static int g_manual_emotion = 0;
 static int g_manual_weather = 0;
 static int g_manual_animation = 0;
 
+/* Page cycling state (matches ESP32 boot button behavior) */
+typedef enum {
+    PAGE_FACE,
+    PAGE_WEATHER,
+    PAGE_CLOCK,
+    PAGE_CALENDAR,
+    PAGE_SUBWAY,
+    PAGE_TIMER,
+    PAGE_COUNT
+} page_t;
+static page_t g_current_page = PAGE_FACE;
+
+/**
+ * Show a specific page (matches ESP32 boot button behavior)
+ */
+static void show_page(page_t page)
+{
+    g_current_page = page;
+    g_demo_mode = false;
+
+    switch (page) {
+        case PAGE_FACE:
+            face_renderer_clear_display();
+            face_renderer_set_emotion_str("neutral");
+            printf("Page: Face\n");
+            break;
+
+        case PAGE_WEATHER:
+            face_renderer_show_weather("72°F", WEATHER_ICON_SUNNY, "Clear");
+            printf("Page: Weather\n");
+            break;
+
+        case PAGE_CLOCK:
+            {
+                time_t t = time(NULL);
+                struct tm* tm_info = localtime(&t);
+                char date_str[32];
+                strftime(date_str, sizeof(date_str), "%a %b %d", tm_info);
+                for (int i = 0; date_str[i]; i++) {
+                    if (date_str[i] >= 'a' && date_str[i] <= 'z') date_str[i] -= 32;
+                }
+                face_renderer_show_clock(tm_info->tm_hour, tm_info->tm_min, false, date_str);
+                printf("Page: Clock\n");
+            }
+            break;
+
+        case PAGE_CALENDAR:
+            {
+                calendar_event_t demo_events[2];
+                strncpy(demo_events[0].time_str, "10:00 AM", sizeof(demo_events[0].time_str));
+                strncpy(demo_events[0].title, "Team Meeting", sizeof(demo_events[0].title));
+                strncpy(demo_events[0].location, "Conference Room", sizeof(demo_events[0].location));
+                strncpy(demo_events[1].time_str, "2:00 PM", sizeof(demo_events[1].time_str));
+                strncpy(demo_events[1].title, "Code Review", sizeof(demo_events[1].title));
+                demo_events[1].location[0] = '\0';
+                face_renderer_show_calendar(demo_events, 2);
+                printf("Page: Calendar\n");
+            }
+            break;
+
+        case PAGE_SUBWAY:
+            {
+                int demo_times[] = {3, 8, 12};
+                face_renderer_show_subway("1", 0xEE352E, "110 St", "Downtown", demo_times, 3);
+                printf("Page: Subway\n");
+            }
+            break;
+
+        case PAGE_TIMER:
+            face_renderer_show_timer(25, 0, "Focus", false);
+            printf("Page: Timer\n");
+            break;
+
+        default:
+            break;
+    }
+}
+
+/**
+ * Cycle to the next page (simulates ESP32 boot button press)
+ */
+static void cycle_to_next_page(void)
+{
+    page_t next = (g_current_page + 1) % PAGE_COUNT;
+    show_page(next);
+}
+
 /**
  * Keyboard handler for manual control
  */
@@ -549,6 +636,11 @@ static void keyboard_handler(int key)
                 face_renderer_set_emotion_str(emotions[g_manual_emotion]);
                 printf("Manual: Emotion -> %s\n", emotions[g_manual_emotion]);
             }
+            break;
+
+        /* TAB = Cycle through pages (simulates ESP32 boot button) */
+        case SDLK_TAB:
+            cycle_to_next_page();
             break;
 
         /* F = Face mode (cycle emotions with arrows) */
@@ -766,6 +858,7 @@ static void keyboard_handler(int key)
         /* H = Help */
         case SDLK_h:
             printf("\n=== Keyboard Controls ===\n");
+            printf("TAB    : Cycle pages (Face->Weather->Clock->Calendar->Subway->Timer)\n");
             printf("1-9    : Set emotion (1=neutral, 2=happy, ...9=cat)\n");
             printf("F      : Face mode\n");
             printf("C      : Clock mode\n");
@@ -813,6 +906,7 @@ static void print_usage(const char* prog)
     printf("  host: Server hostname (default: %s)\n", DEFAULT_HOST);
     printf("  port: Server port (default: %d)\n", DEFAULT_PORT);
     printf("\nKeyboard Controls:\n");
+    printf("  TAB        : Cycle pages (simulates boot button)\n");
     printf("  1-9        : Set emotion (1=neutral, 2=happy, ...9=cat)\n");
     printf("  F          : Face mode\n");
     printf("  C          : Clock mode (real time)\n");
