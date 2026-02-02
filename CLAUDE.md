@@ -239,6 +239,7 @@ source ~/esp/esp-idf/export.sh 2>/dev/null && idf.py build && ./flash.sh
 | `components/network/luna_protocol.c` | JSON command parsing |
 | `components/audio/audio_capture.c` | Microphone input (16kHz mono) |
 | `components/audio/audio_playback.c` | Speaker output |
+| `components/luna_motion/luna_motion.c` | IMU-based orientation & shake detection |
 | `sdkconfig.defaults` | Build configuration |
 
 ### Display Modes
@@ -271,6 +272,28 @@ Touch-based interactions in face mode:
 | **Dizzy** | Shake window (simulator) or D key | Face wobbles with wavy mouth for 3 seconds |
 
 Note: These interactions only activate when in `DISPLAY_MODE_FACE`
+
+### Orientation & Motion Detection
+
+The QMI8658 IMU detects device orientation and shake gestures. Controlled by `components/luna_motion/luna_motion.c`.
+
+**Orientations** (5 states):
+| Orientation | Trigger | Distressed? |
+|-------------|---------|-------------|
+| `ORIENTATION_UPRIGHT` | Y > 7.0 (buttons up) | No |
+| `ORIENTATION_ON_BACK` | Z < -8.8 (screen facing ceiling) | Yes |
+| `ORIENTATION_UPSIDE_DOWN` | Y < -5.0 (buttons down) | Yes |
+| `ORIENTATION_FACE_DOWN` | Z > 7.0 (screen facing floor) | No |
+| `ORIENTATION_OTHER` | No axis has strong gravity | No |
+
+**Thresholds** (in m/s², gravity ≈ 9.8):
+- `GRAVITY_THRESHOLD = 7.0` - General threshold for axis detection
+- `ON_BACK_THRESHOLD = 8.8` - Requires nearly flat to trigger distress
+- `UPSIDE_DOWN_THRESHOLD = 5.0` - More sensitive, fills gap between on_back and upside_down
+
+**Distressed Mode**: When on_back or upside_down, face shows wavy mouth effect. Clears when upright.
+
+**Shake Detection**: Triggers dizzy effect when device is shaken (direction changes above threshold within time window).
 
 ### LLM Tools (Display-Related)
 

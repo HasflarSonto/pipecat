@@ -99,7 +99,7 @@ static void on_shake_detected(float intensity)
  */
 static void on_orientation_change(luna_orientation_t orientation)
 {
-    const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "OTHER"};
+    const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "UPSIDE_DOWN", "OTHER"};
     ESP_LOGI(TAG, "Orientation changed to: %s", orient_names[orientation]);
 
     // Only react to orientation when on face page
@@ -107,8 +107,8 @@ static void on_orientation_change(luna_orientation_t orientation)
         return;
     }
 
-    if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_FACE_DOWN) {
-        // Device is not upright - trigger distressed effect (wavy mouth, normal eyes)
+    if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_UPSIDE_DOWN) {
+        // Device is lying flat or upside down - trigger distressed effect (wavy mouth, normal eyes)
         if (!s_is_distressed) {
             s_is_distressed = true;
             face_renderer_set_distressed(true);
@@ -145,7 +145,7 @@ static void show_page(page_t page)
             face_renderer_set_emotion(EMOTION_EYES_ONLY);
             // Check current orientation and apply distressed if already lying down
             luna_orientation_t orientation = luna_motion_get_orientation();
-            if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_FACE_DOWN) {
+            if (orientation == ORIENTATION_ON_BACK || orientation == ORIENTATION_UPSIDE_DOWN) {
                 s_is_distressed = true;
                 face_renderer_set_distressed(true);
                 ESP_LOGI(TAG, "Luna distressed on page entry (orientation=%d)", orientation);

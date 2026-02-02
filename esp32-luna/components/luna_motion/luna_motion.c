@@ -52,6 +52,8 @@ typedef struct {
 
 // Orientation detection thresholds
 #define GRAVITY_THRESHOLD       7.0f    // m/s^2 - threshold to detect gravity on an axis
+#define ON_BACK_THRESHOLD       8.8f    // m/s^2 - threshold for on_back (requires nearly flat)
+#define UPSIDE_DOWN_THRESHOLD   5.0f    // m/s^2 - lower threshold for upside_down (fills gap with on_back)
 #define ORIENTATION_DEBOUNCE_MS 500     // ms - debounce time before reporting change
 #define ORIENTATION_STABLE_COUNT 10     // samples needed to confirm orientation
 
@@ -254,10 +256,10 @@ void luna_motion_tick(float accel_x, float accel_y, float accel_z)
 // - Y axis: vertical, pointing up (gravity = -9.8 when upright)
 // - Z axis: pointing out of screen toward user
 //
-// Orientations:
-// - Upright: Y has gravity (negative)
-// - On back (screen up): Z has gravity (positive - screen facing up)
-// - Face down: Z has gravity (negative - screen facing down)
+// Orientations (Z axis points INTO screen):
+// - Upright: Y has positive gravity reading (~+9.8)
+// - On back (screen up): Z has negative gravity reading (~-9.8)
+// - Face down: Z has positive gravity reading (~+9.8)
 static void process_orientation(float ax, float ay, float az)
 {
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -267,15 +269,19 @@ static void process_orientation(float ax, float ay, float az)
     luna_orientation_t detected = ORIENTATION_OTHER;
 
     // Check if Z axis has strong gravity component (lying flat)
-    if (az > GRAVITY_THRESHOLD) {
-        // Positive Z = screen facing up = on back
+    // Note: Z axis points INTO screen, so negative Z = screen facing up
+    if (az < -ON_BACK_THRESHOLD) {
+        // Negative Z = screen facing up = on back (uses lower threshold for sensitivity)
         detected = ORIENTATION_ON_BACK;
-    } else if (az < -GRAVITY_THRESHOLD) {
-        // Negative Z = screen facing down = face down
+    } else if (az > GRAVITY_THRESHOLD) {
+        // Positive Z = screen facing down = face down
         detected = ORIENTATION_FACE_DOWN;
-    } else if (ay < -GRAVITY_THRESHOLD || ay > GRAVITY_THRESHOLD) {
-        // Y axis has gravity = upright (or upside down, treat as upright)
+    } else if (ay > GRAVITY_THRESHOLD) {
+        // Positive Y = buttons facing up = normal upright
         detected = ORIENTATION_UPRIGHT;
+    } else if (ay < -UPSIDE_DOWN_THRESHOLD) {
+        // Negative Y = buttons facing down = upside down (lower threshold to fill gap with on_back)
+        detected = ORIENTATION_UPSIDE_DOWN;
     } else if (ax < -GRAVITY_THRESHOLD || ax > GRAVITY_THRESHOLD) {
         // X axis has gravity = tilted sideways, treat as upright-ish
         detected = ORIENTATION_UPRIGHT;
@@ -298,7 +304,7 @@ static void process_orientation(float ax, float ay, float az)
         orient->current = detected;
         orient->last_change_time = now_ms;
 
-        const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "OTHER"};
+        const char* orient_names[] = {"UPRIGHT", "ON_BACK", "FACE_DOWN", "UPSIDE_DOWN", "OTHER"};
         ESP_LOGI(TAG, "Orientation changed: %s -> %s",
                  orient_names[old], orient_names[detected]);
 

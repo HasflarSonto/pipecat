@@ -26,6 +26,7 @@ typedef enum {
     ORIENTATION_UPRIGHT,      // Normal - standing on side, buttons up
     ORIENTATION_ON_BACK,      // Lying on back - screen facing ceiling
     ORIENTATION_FACE_DOWN,    // Face down - screen facing floor
+    ORIENTATION_UPSIDE_DOWN,  // Upside down - buttons facing down
     ORIENTATION_OTHER,        // Tilted or unknown orientation
 } luna_orientation_t;
 
