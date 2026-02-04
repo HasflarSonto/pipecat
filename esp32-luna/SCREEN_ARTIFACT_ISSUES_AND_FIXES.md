@@ -2,7 +2,7 @@
 
 This document tracks LVGL display artifact issues encountered on the ESP32-Luna project and their solutions.
 
-## Current Status (2026-02-02) - FIXED ✅
+## Current Status (2026-02-04) - WiFi + Pages FIXED ✅
 
 | Page | Status | Details |
 |------|--------|---------|
@@ -12,6 +12,27 @@ This document tracks LVGL display artifact issues encountered on the ESP32-Luna 
 | Timer | ✅ Working | Full screen with buttons |
 | Calendar | ✅ Working | Full screen |
 | Subway | ✅ Working | Full screen |
+| WiFi + Pages | ✅ **FIXED** | Memory config fix - see SCREEN_PAGE_SWITCHING_FIX.md |
+| **Text/Chat** | ⏳ **Testing** | Needs WebSocket integration test |
+
+---
+
+## NEW ISSUE (2026-02-04): Text Display Broken After Server Integration
+
+### Symptom
+When receiving text from server (chat_server.py → ESP32):
+1. Text shows but **eyes block the middle** - e.g., "Connected to chat!" shows as "Con [blank] t!"
+2. After SPI error, **screen freezes** - subsequent text updates don't display
+3. SPI error still occurs: `panel_io_spi_tx_color(395): spi transmit (queue) color failed`
+
+### Root Cause Analysis
+The `face_renderer_show_text()` function needs to:
+1. **MOVE eyes off-screen** (not just hide) - Hidden widgets leave their pixels in display buffer
+2. Use offsets >= (-600, -600) due to alignment persistence (see below)
+
+### Failed Fix Attempt #16 (2026-02-04)
+Only using `lv_obj_add_flag(eye, LV_OBJ_FLAG_HIDDEN)` without moving off-screen.
+**Result**: Eyes still visible/blocking text because LVGL doesn't redraw hidden widget areas.
 
 ---
 

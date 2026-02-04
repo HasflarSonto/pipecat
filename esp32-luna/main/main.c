@@ -19,6 +19,7 @@
 #include "pmu_manager.h"
 #include "luna_motion.h"
 #include "emotions.h"
+#include "wifi_manager.h"
 
 static const char *TAG = "luna_main";
 
@@ -79,6 +80,30 @@ static bool poll_boot_button(void)
 
     s_button_last_state = current_state;
     return false;
+}
+
+/**
+ * @brief Callback for WiFi events (logging only)
+ */
+static void on_wifi_event(wifi_manager_event_t event, void *ctx)
+{
+    switch (event) {
+        case WIFI_EVENT_CONNECTED:
+            ESP_LOGI(TAG, ">>> WiFi CONNECTED <<<");
+            break;
+        case WIFI_EVENT_GOT_IP: {
+            char ip[16];
+            wifi_manager_get_ip(ip);
+            ESP_LOGI(TAG, ">>> WiFi GOT IP: %s <<<", ip);
+            break;
+        }
+        case WIFI_EVENT_DISCONNECTED:
+            ESP_LOGW(TAG, ">>> WiFi DISCONNECTED <<<");
+            break;
+        case WIFI_EVENT_LOST_IP:
+            ESP_LOGW(TAG, ">>> WiFi LOST IP <<<");
+            break;
+    }
 }
 
 /**
@@ -251,6 +276,22 @@ void app_main(void)
         }
     } else {
         ESP_LOGW(TAG, "Failed to init motion detection: %s", esp_err_to_name(ret));
+    }
+
+    // Initialize WiFi ONLY (no WebSocket, no audio) - testing for SPI issues
+    ESP_LOGI(TAG, "Initializing WiFi...");
+    ret = wifi_manager_init();
+    if (ret == ESP_OK) {
+        wifi_manager_set_event_callback(on_wifi_event, NULL);  // Log WiFi events
+        wifi_manager_config_t wifi_config = {
+            .store_in_nvs = false,
+        };
+        strncpy(wifi_config.ssid, CONFIG_LUNA_WIFI_SSID, sizeof(wifi_config.ssid) - 1);
+        strncpy(wifi_config.password, CONFIG_LUNA_WIFI_PASSWORD, sizeof(wifi_config.password) - 1);
+        ESP_LOGI(TAG, "Connecting to WiFi: %s", wifi_config.ssid);
+        wifi_manager_connect(&wifi_config);
+    } else {
+        ESP_LOGW(TAG, "WiFi manager init failed: %s", esp_err_to_name(ret));
     }
 
     // Initialize boot button
