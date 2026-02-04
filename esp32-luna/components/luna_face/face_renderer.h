@@ -173,6 +173,18 @@ void face_renderer_show_text(const char *text, font_size_t size,
 void face_renderer_clear_text(void);
 
 /**
+ * @brief Show caption overlay at bottom of screen (doesn't hide face)
+ * @param text Text to display
+ * @param color Text color (RGB888)
+ */
+void face_renderer_show_caption(const char *text, uint32_t color);
+
+/**
+ * @brief Hide caption overlay
+ */
+void face_renderer_hide_caption(void);
+
+/**
  * @brief Switch to pixel art mode
  * @param pixels Array of pixel data (x, y, color)
  * @param count Number of pixels

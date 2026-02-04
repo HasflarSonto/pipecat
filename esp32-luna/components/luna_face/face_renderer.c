@@ -155,6 +155,10 @@ static struct {
     // Text label
     lv_obj_t *text_label;
 
+    // Caption overlay (bottom of screen, doesn't hide face)
+    lv_obj_t *caption_label;
+    char caption_text[256];
+
     // Pixel art objects
     lv_obj_t **pixel_objs;
     size_t pixel_obj_count;
@@ -1376,6 +1380,17 @@ esp_err_t face_renderer_init(const face_renderer_config_t *config)
     lv_obj_center(s_renderer.text_label);
     lv_obj_add_flag(s_renderer.text_label, LV_OBJ_FLAG_HIDDEN);
 
+    // Create caption label (bottom overlay - shows while face is visible)
+    s_renderer.caption_label = lv_label_create(scr);
+    lv_obj_set_width(s_renderer.caption_label, s_renderer.width - 24);
+    lv_label_set_long_mode(s_renderer.caption_label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(s_renderer.caption_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(s_renderer.caption_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(s_renderer.caption_label, lv_color_white(), 0);
+    lv_obj_set_pos(s_renderer.caption_label, 12, s_renderer.height - 40);  // 20px from bottom
+    lv_obj_add_flag(s_renderer.caption_label, LV_OBJ_FLAG_HIDDEN);
+    s_renderer.caption_text[0] = '\0';
+
     // Create per-page background panels - these "paint over" old content
     // IMPORTANT: Created during init to avoid top-left corner bug
     ESP_LOGI(TAG, "Creating per-page background panels...");
@@ -1849,6 +1864,49 @@ void face_renderer_clear_text(void)
 
         xSemaphoreGive(s_renderer.mutex);
         ESP_LOGI(TAG, "Text cleared");
+    }
+}
+
+void face_renderer_show_caption(const char *text, uint32_t color)
+{
+    if (!s_renderer.initialized || text == NULL) {
+        return;
+    }
+
+    // NO mode switch - caption overlays the face
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        strncpy(s_renderer.caption_text, text, sizeof(s_renderer.caption_text) - 1);
+        s_renderer.caption_text[sizeof(s_renderer.caption_text) - 1] = '\0';
+
+        if (bsp_display_lock(pdMS_TO_TICKS(50))) {
+            lv_label_set_text(s_renderer.caption_label, text);
+            lv_obj_set_style_text_color(s_renderer.caption_label,
+                lv_color_make((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF), 0);
+            lv_obj_remove_flag(s_renderer.caption_label, LV_OBJ_FLAG_HIDDEN);
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Caption shown: %.40s%s", text, strlen(text) > 40 ? "..." : "");
+    }
+}
+
+void face_renderer_hide_caption(void)
+{
+    if (!s_renderer.initialized) {
+        return;
+    }
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        s_renderer.caption_text[0] = '\0';
+
+        if (bsp_display_lock(pdMS_TO_TICKS(50))) {
+            lv_obj_add_flag(s_renderer.caption_label, LV_OBJ_FLAG_HIDDEN);
+            bsp_display_unlock();
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+        ESP_LOGI(TAG, "Caption hidden");
     }
 }
 

@@ -223,10 +223,13 @@ idf.py -p /dev/cu.usbmodem1101 monitor
 idf.py fullclean
 ```
 
-**IMPORTANT: Always auto-flash after code changes.** When making changes to ESP32-Luna code, always build AND flash automatically after each change so the user can test immediately. Use:
+**IMPORTANT: User handles build/flash for testing.** Do NOT auto-build/flash. The user will build and flash manually when ready to test.
+
+**Chat Server** (for testing ESP32 ↔ server communication):
 ```bash
-source ~/esp/esp-idf/export.sh 2>/dev/null && idf.py build && ./flash.sh
+cd /Users/antonioli/Desktop/pipecat/esp32-luna && python chat_server.py --port 7860
 ```
+This server accepts terminal input, sends to Claude API, and broadcasts responses to connected ESP32 via WebSocket.
 
 ### Key Files
 

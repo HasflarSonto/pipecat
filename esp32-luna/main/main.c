@@ -21,6 +21,7 @@
 #include "emotions.h"
 #include "wifi_manager.h"
 #include "ws_client.h"
+#include "luna_protocol.h"
 
 static const char *TAG = "luna_main";
 
@@ -86,7 +87,32 @@ static bool poll_boot_button(void)
 }
 
 /**
- * @brief Callback for WebSocket events (logging only for testing)
+ * @brief Handle WebSocket command (parse JSON and dispatch to renderer)
+ */
+static void handle_ws_command(const char *json_str)
+{
+    luna_cmd_t cmd;
+    if (luna_protocol_parse(json_str, &cmd) != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to parse command");
+        return;
+    }
+
+    switch (cmd.type) {
+        case LUNA_CMD_TEXT:
+            // Show text as caption overlay at bottom of screen
+            face_renderer_show_caption(cmd.data.text.content, cmd.data.text.color);
+            break;
+        case LUNA_CMD_TEXT_CLEAR:
+            face_renderer_hide_caption();
+            break;
+        default:
+            ESP_LOGD(TAG, "Unhandled command type: %d", cmd.type);
+            break;
+    }
+}
+
+/**
+ * @brief Callback for WebSocket events
  */
 static void on_ws_event(ws_client_event_data_t *event, void *ctx)
 {
@@ -107,6 +133,8 @@ static void on_ws_event(ws_client_event_data_t *event, void *ctx)
             } else {
                 ESP_LOGI(TAG, ">>> WS TEXT (%d bytes): %.100s... <<<", (int)event->data_len, (const char*)event->data);
             }
+            // Parse and handle command
+            handle_ws_command((const char*)event->data);
             break;
         case WS_EVENT_BINARY_DATA:
             ESP_LOGI(TAG, ">>> WS BINARY: %d bytes <<<", (int)event->data_len);
