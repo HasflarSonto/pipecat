@@ -87,6 +87,22 @@ static bool poll_boot_button(void)
 }
 
 /**
+ * @brief Convert weather icon string to enum
+ */
+static weather_icon_t parse_weather_icon(const char *icon_str)
+{
+    if (!icon_str) return WEATHER_ICON_SUNNY;
+    if (strcmp(icon_str, "sunny") == 0) return WEATHER_ICON_SUNNY;
+    if (strcmp(icon_str, "cloudy") == 0) return WEATHER_ICON_CLOUDY;
+    if (strcmp(icon_str, "rainy") == 0) return WEATHER_ICON_RAINY;
+    if (strcmp(icon_str, "snowy") == 0) return WEATHER_ICON_SNOWY;
+    if (strcmp(icon_str, "stormy") == 0) return WEATHER_ICON_STORMY;
+    if (strcmp(icon_str, "foggy") == 0) return WEATHER_ICON_FOGGY;
+    if (strcmp(icon_str, "partly_cloudy") == 0) return WEATHER_ICON_PARTLY_CLOUDY;
+    return WEATHER_ICON_SUNNY;
+}
+
+/**
  * @brief Handle WebSocket command (parse JSON and dispatch to renderer)
  */
 static void handle_ws_command(const char *json_str)
@@ -102,13 +118,70 @@ static void handle_ws_command(const char *json_str)
             // Show text as caption overlay at bottom of screen
             face_renderer_show_caption(cmd.data.text.content, cmd.data.text.color);
             break;
+
         case LUNA_CMD_TEXT_CLEAR:
             face_renderer_hide_caption();
             break;
+
+        case LUNA_CMD_EMOTION:
+            face_renderer_set_emotion_str(cmd.data.emotion.emotion);
+            ESP_LOGI(TAG, "Set emotion: %s", cmd.data.emotion.emotion);
+            break;
+
+        case LUNA_CMD_GAZE:
+            face_renderer_set_gaze(cmd.data.gaze.x, cmd.data.gaze.y);
+            break;
+
+        case LUNA_CMD_WEATHER:
+            face_renderer_show_weather(
+                cmd.data.weather.temp,
+                parse_weather_icon(cmd.data.weather.icon),
+                cmd.data.weather.description);
+            ESP_LOGI(TAG, "Show weather: %s %s", cmd.data.weather.temp, cmd.data.weather.icon);
+            break;
+
+        case LUNA_CMD_CLOCK:
+            face_renderer_show_clock(
+                cmd.data.clock.hours,
+                cmd.data.clock.minutes,
+                cmd.data.clock.is_24h,
+                NULL);  // No date string from command yet
+            ESP_LOGI(TAG, "Show clock: %02d:%02d", cmd.data.clock.hours, cmd.data.clock.minutes);
+            break;
+
+        case LUNA_CMD_TIMER:
+            face_renderer_show_timer(
+                cmd.data.timer.minutes,
+                cmd.data.timer.seconds,
+                cmd.data.timer.label,
+                cmd.data.timer.is_running);
+            ESP_LOGI(TAG, "Show timer: %d:%02d %s",
+                     cmd.data.timer.minutes, cmd.data.timer.seconds, cmd.data.timer.label);
+            break;
+
+        case LUNA_CMD_SUBWAY:
+            face_renderer_show_subway(
+                cmd.data.subway.line,
+                cmd.data.subway.line_color,
+                cmd.data.subway.station,
+                cmd.data.subway.direction,
+                cmd.data.subway.times,
+                cmd.data.subway.num_times);
+            ESP_LOGI(TAG, "Show subway: %s to %s", cmd.data.subway.line, cmd.data.subway.station);
+            break;
+
+        case LUNA_CMD_CLEAR_DISPLAY:
+            face_renderer_clear_display();
+            ESP_LOGI(TAG, "Clear display -> face mode");
+            break;
+
         default:
             ESP_LOGD(TAG, "Unhandled command type: %d", cmd.type);
             break;
     }
+
+    // Free any allocated resources (e.g., pixel_art pixels)
+    luna_protocol_free_cmd(&cmd);
 }
 
 /**

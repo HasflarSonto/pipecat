@@ -774,29 +774,27 @@ static void update_face_widgets(void)
             ESP_LOGI(TAG, "Neutral mouth at y=%d, len=%d", mouth_y, line_len);
 
         } else if (curve_category == 1) {
-            // Smile - arc curving downward (like a U)
-            // Use same pattern as cat arcs: square size, 0-180° angles
-            int arc_size = 60;  // Same approach as cat arcs (which use 40)
+            // Smile - arc curving upward at ends (like a U viewed from front)
+            int arc_size = 60;
             int arc_thickness = (int)(6 * SCALE_Y);
-            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);  // Square like cat arcs
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
             lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/2);
-            // Smile: 180° to 360° = bottom semicircle (curves down like a smile)
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
-            lv_arc_set_angles(s_renderer.mouth_arc, 180, 360);
+            // Smile: 0° to 180° = top semicircle (opens upward = smile)
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
+            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
             lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Smile (arc) at y=%d, size=%d", mouth_y, arc_size);
 
         } else {
-            // Frown - arc curving upward (inverted U)
-            // Use same pattern as cat arcs: square size, 0-180° angles
-            int arc_size = 60;  // Same approach as cat arcs (which use 40)
+            // Frown - arc curving downward at ends (inverted smile)
+            int arc_size = 60;
             int arc_thickness = (int)(6 * SCALE_Y);
-            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);  // Square like cat arcs
+            lv_obj_set_size(s_renderer.mouth_arc, arc_size, arc_size);
             lv_obj_set_pos(s_renderer.mouth_arc, mouth_x - arc_size/2, mouth_y - arc_size/2);
-            // Frown: 0° to 180° = top semicircle (curves up like a frown)
-            lv_arc_set_bg_angles(s_renderer.mouth_arc, 0, 180);
-            lv_arc_set_angles(s_renderer.mouth_arc, 0, 180);
+            // Frown: 180° to 360° = bottom semicircle (opens downward = frown)
+            lv_arc_set_bg_angles(s_renderer.mouth_arc, 180, 360);
+            lv_arc_set_angles(s_renderer.mouth_arc, 180, 360);
             lv_obj_set_style_arc_width(s_renderer.mouth_arc, arc_thickness, LV_PART_INDICATOR);
             lv_obj_remove_flag(s_renderer.mouth_arc, LV_OBJ_FLAG_HIDDEN);
             ESP_LOGI(TAG, "Frown (arc) at y=%d, size=%d", mouth_y, arc_size);
