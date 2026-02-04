@@ -1,8 +1,8 @@
 /*
- * ESP32-Luna Main Application (Simplified Demo Mode)
+ * ESP32-Luna Main Application
  *
- * This is a stripped-down version that boots directly into demo mode.
- * No WiFi, no WebSocket, no audio - just face display with button cycling.
+ * Demo mode with WiFi and WebSocket connectivity.
+ * Button cycles through pages, WebSocket receives commands (logging only for now).
  */
 
 #include <stdio.h>
@@ -20,6 +20,7 @@
 #include "luna_motion.h"
 #include "emotions.h"
 #include "wifi_manager.h"
+#include "ws_client.h"
 
 static const char *TAG = "luna_main";
 
@@ -43,6 +44,8 @@ static bool s_button_last_state = true;  // true = released (pull-up)
 static int64_t s_button_last_press_time = 0;
 static emotion_id_t s_pre_distress_emotion = EMOTION_EYES_ONLY;  // Emotion before distress
 static bool s_is_distressed = false;  // Currently showing distress
+static bool s_ws_initialized = false;  // WebSocket initialized flag
+static bool s_wifi_got_ip = false;     // Flag to defer WebSocket init to main loop
 
 /**
  * @brief Initialize boot button GPIO (polling mode)
@@ -83,6 +86,66 @@ static bool poll_boot_button(void)
 }
 
 /**
+ * @brief Callback for WebSocket events (logging only for testing)
+ */
+static void on_ws_event(ws_client_event_data_t *event, void *ctx)
+{
+    switch (event->event) {
+        case WS_EVENT_CONNECTED:
+            ESP_LOGI(TAG, ">>> WebSocket CONNECTED <<<");
+            break;
+        case WS_EVENT_DISCONNECTED:
+            ESP_LOGW(TAG, ">>> WebSocket DISCONNECTED <<<");
+            break;
+        case WS_EVENT_ERROR:
+            ESP_LOGE(TAG, ">>> WebSocket ERROR <<<");
+            break;
+        case WS_EVENT_TEXT_DATA:
+            // Log received JSON (truncate if too long)
+            if (event->data_len < 200) {
+                ESP_LOGI(TAG, ">>> WS TEXT: %.*s <<<", (int)event->data_len, (const char*)event->data);
+            } else {
+                ESP_LOGI(TAG, ">>> WS TEXT (%d bytes): %.100s... <<<", (int)event->data_len, (const char*)event->data);
+            }
+            break;
+        case WS_EVENT_BINARY_DATA:
+            ESP_LOGI(TAG, ">>> WS BINARY: %d bytes <<<", (int)event->data_len);
+            break;
+    }
+}
+
+/**
+ * @brief Initialize and connect WebSocket
+ */
+static void init_websocket(void)
+{
+    if (s_ws_initialized) {
+        // Already initialized, just reconnect
+        ws_client_connect();
+        return;
+    }
+
+    ESP_LOGI(TAG, "Initializing WebSocket...");
+    ws_client_config_t ws_config = {
+        .server_port = CONFIG_LUNA_SERVER_PORT,
+        .reconnect_ms = 5000,  // Auto-reconnect every 5 seconds
+    };
+    strncpy(ws_config.server_ip, CONFIG_LUNA_SERVER_IP, sizeof(ws_config.server_ip) - 1);
+    strncpy(ws_config.endpoint, "/luna-esp32", sizeof(ws_config.endpoint) - 1);
+
+    esp_err_t ret = ws_client_init(&ws_config);
+    if (ret == ESP_OK) {
+        ws_client_set_event_callback(on_ws_event, NULL);
+        s_ws_initialized = true;
+        ESP_LOGI(TAG, "WebSocket initialized, connecting to ws://%s:%d%s",
+                 ws_config.server_ip, ws_config.server_port, ws_config.endpoint);
+        ws_client_connect();
+    } else {
+        ESP_LOGE(TAG, "WebSocket init failed: %s", esp_err_to_name(ret));
+    }
+}
+
+/**
  * @brief Callback for WiFi events (logging only)
  */
 static void on_wifi_event(wifi_manager_event_t event, void *ctx)
@@ -95,6 +158,8 @@ static void on_wifi_event(wifi_manager_event_t event, void *ctx)
             char ip[16];
             wifi_manager_get_ip(ip);
             ESP_LOGI(TAG, ">>> WiFi GOT IP: %s <<<", ip);
+            // Set flag to init WebSocket from main loop (avoid stack overflow in event task)
+            s_wifi_got_ip = true;
             break;
         }
         case WIFI_EVENT_DISCONNECTED:
@@ -309,6 +374,11 @@ void app_main(void)
     int status_counter = 0;
     while (1) {
         vTaskDelay(pdMS_TO_TICKS(50));  // 20Hz polling
+
+        // Initialize WebSocket when WiFi gets IP (deferred from callback to avoid stack overflow)
+        if (s_wifi_got_ip && !s_ws_initialized) {
+            init_websocket();
+        }
 
         // Check button
         if (poll_boot_button()) {

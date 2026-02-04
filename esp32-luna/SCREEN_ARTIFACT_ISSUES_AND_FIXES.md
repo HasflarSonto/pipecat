@@ -2,7 +2,7 @@
 
 This document tracks LVGL display artifact issues encountered on the ESP32-Luna project and their solutions.
 
-## Current Status (2026-02-04) - WiFi + Pages FIXED ✅
+## Current Status (2026-02-04) - WiFi + WebSocket + Pages FIXED ✅
 
 | Page | Status | Details |
 |------|--------|---------|
@@ -13,7 +13,8 @@ This document tracks LVGL display artifact issues encountered on the ESP32-Luna 
 | Calendar | ✅ Working | Full screen |
 | Subway | ✅ Working | Full screen |
 | WiFi + Pages | ✅ **FIXED** | Memory config fix - see SCREEN_PAGE_SWITCHING_FIX.md |
-| **Text/Chat** | ⏳ **Testing** | Needs WebSocket integration test |
+| WebSocket | ✅ **FIXED** | Deferred init to main loop (stack overflow fix) |
+| **Text/Chat** | ⏳ **Pending** | WebSocket receives JSON, need to add display handler |
 
 ---
 
