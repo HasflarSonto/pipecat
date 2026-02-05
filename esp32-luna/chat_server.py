@@ -667,10 +667,14 @@ async def handle_tool_call(tool_name: str, tool_input: dict) -> str:
 
 
 async def broadcast_text(text: str):
-    """Send text caption to ESP32."""
+    """Send text caption to ESP32 - truncate to fit screen without scrollbar."""
+    # ~60 chars fits on screen with medium font without scrolling
+    truncated = text[:60]
+    if len(text) > 60:
+        truncated = text[:57] + "..."
     await send_esp32_command({
         "cmd": "text",
-        "content": text[:250],
+        "content": truncated,
         "size": "medium",
         "color": "#FFFFFF",
         "bg": "#1E1E28"
@@ -686,14 +690,14 @@ async def get_claude_response(user_input: str) -> str:
 
         response = claude_client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            system="""You are Luna, a friendly robot on a small ESP32 screen.
+            max_tokens=60,
+            system="""You are Luna, a friendly robot on a tiny ESP32 screen.
 
 RULES:
-- For casual chat (greetings, how are you, etc): Be warm and conversational, 1-2 short sentences max
-- For tool actions (weather, time, subway, emails): Just say "Here!" or "Showing!" - the display speaks for itself
-- Default location: NYC. Default subway: 1 train at 110 St downtown
-- Keep it natural and friendly, but brief since it's a tiny screen""",
+- ALL responses: ONE short sentence max (under 50 characters)
+- Tool actions: Just "Here!" or "There you go!"
+- Casual chat: Brief but warm, like "Doing great, thanks!"
+- Default: NYC weather, 1 train 110 St downtown""",
             tools=TOOLS,
             messages=messages
         )
