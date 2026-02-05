@@ -141,9 +141,13 @@ typedef struct {
  * @brief Calendar event for notifications
  */
 typedef struct {
-    char time_str[32];    // Time/sender string
+    char time_str[32];    // Time/sender string (e.g., "10:30 AM")
     char title[64];       // Title/subject
     char location[64];    // Location (optional)
+    int start_hour;       // Start hour (0-23) for positioning
+    int start_minute;     // Start minute (0-59)
+    int end_hour;         // End hour (0-23)
+    int end_minute;       // End minute (0-59)
 } luna_calendar_event_t;
 
 /**
@@ -152,6 +156,8 @@ typedef struct {
 typedef struct {
     luna_calendar_event_t events[5];  // Max 5 events (scrollable)
     int num_events;                   // Number of events (1-5)
+    int now_hour;                     // Current hour (0-23) for "now" line
+    int now_minute;                   // Current minute (0-59)
 } luna_cmd_calendar_t;
 
 /**

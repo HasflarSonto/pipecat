@@ -33,12 +33,16 @@ typedef enum {
 } display_mode_t;
 
 /**
- * @brief Calendar event structure (for Apple Watch style display)
+ * @brief Calendar event structure (for day view display)
  */
 typedef struct {
-    char time_str[32];        // Time range (e.g., "10:00-11:00 AM")
+    char time_str[32];        // Time display string (e.g., "10:30 AM")
     char title[64];           // Event title
     char location[64];        // Location (optional, can be empty)
+    int start_hour;           // Start hour (0-23) for positioning
+    int start_minute;         // Start minute (0-59)
+    int end_hour;             // End hour (0-23)
+    int end_minute;           // End minute (0-59)
 } calendar_event_t;
 
 /**
@@ -266,11 +270,13 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
                                 const int *times, int num_times);
 
 /**
- * @brief Show calendar display (Apple Watch style cards)
+ * @brief Show calendar display (day view with time axis)
  * @param events Array of calendar events
  * @param num_events Number of events (1-5)
+ * @param now_hour Current hour (0-23) for "now" line
+ * @param now_minute Current minute (0-59)
  */
-void face_renderer_show_calendar(const calendar_event_t *events, int num_events);
+void face_renderer_show_calendar(const calendar_event_t *events, int num_events, int now_hour, int now_minute);
 
 /**
  * @brief Show notifications display (Apple Watch style cards)

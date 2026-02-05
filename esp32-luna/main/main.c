@@ -183,9 +183,16 @@ static void handle_ws_command(const char *json_str)
                 strncpy(events[i].time_str, cmd.data.calendar.events[i].time_str, sizeof(events[i].time_str) - 1);
                 strncpy(events[i].title, cmd.data.calendar.events[i].title, sizeof(events[i].title) - 1);
                 strncpy(events[i].location, cmd.data.calendar.events[i].location, sizeof(events[i].location) - 1);
+                events[i].start_hour = cmd.data.calendar.events[i].start_hour;
+                events[i].start_minute = cmd.data.calendar.events[i].start_minute;
+                events[i].end_hour = cmd.data.calendar.events[i].end_hour;
+                events[i].end_minute = cmd.data.calendar.events[i].end_minute;
             }
-            face_renderer_show_calendar(events, count);
-            ESP_LOGI(TAG, "Show calendar: %d events", count);
+            face_renderer_show_calendar(events, count,
+                                        cmd.data.calendar.now_hour,
+                                        cmd.data.calendar.now_minute);
+            ESP_LOGI(TAG, "Show calendar: %d events, now=%d:%02d",
+                     count, cmd.data.calendar.now_hour, cmd.data.calendar.now_minute);
             break;
         }
 
@@ -385,13 +392,17 @@ static void show_page(page_t page)
 
         case PAGE_CALENDAR: {
             calendar_event_t events[2] = {0};
-            strncpy(events[0].time_str, "In 15 min", sizeof(events[0].time_str) - 1);
+            strncpy(events[0].time_str, "10:00 AM", sizeof(events[0].time_str) - 1);
             strncpy(events[0].title, "Team Standup", sizeof(events[0].title) - 1);
             strncpy(events[0].location, "Conference Room A", sizeof(events[0].location) - 1);
+            events[0].start_hour = 10; events[0].start_minute = 0;
+            events[0].end_hour = 10; events[0].end_minute = 30;
             strncpy(events[1].time_str, "2:00 PM", sizeof(events[1].time_str) - 1);
             strncpy(events[1].title, "Design Review", sizeof(events[1].title) - 1);
             strncpy(events[1].location, "Zoom", sizeof(events[1].location) - 1);
-            face_renderer_show_calendar(events, 2);
+            events[1].start_hour = 14; events[1].start_minute = 0;
+            events[1].end_hour = 15; events[1].end_minute = 0;
+            face_renderer_show_calendar(events, 2, 12, 30);  // Demo: now is 12:30
             break;
         }
 

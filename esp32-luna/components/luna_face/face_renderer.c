@@ -2094,8 +2094,14 @@ static lv_obj_t *s_calendar_time_labels[MAX_CALENDAR_CARDS] = {NULL};
 static lv_obj_t *s_calendar_title_labels[MAX_CALENDAR_CARDS] = {NULL};
 static lv_obj_t *s_calendar_location_labels[MAX_CALENDAR_CARDS] = {NULL};
 
+// Calendar day view storage
+static lv_obj_t *s_calendar_scroll = NULL;  // Scrollable container
+static lv_obj_t *s_calendar_now_line = NULL;  // Red "now" indicator
+static lv_obj_t *s_calendar_time_axis_labels[18] = {NULL};  // 6am-11pm (18 hours)
+
 // Notification card storage (up to 5 items for scrolling)
 #define MAX_NOTIFICATION_CARDS 5
+static lv_obj_t *s_notification_scroll = NULL;  // Scrollable container
 static lv_obj_t *s_notification_cards[MAX_NOTIFICATION_CARDS] = {NULL};
 static lv_obj_t *s_notification_sender_labels[MAX_NOTIFICATION_CARDS] = {NULL};
 static lv_obj_t *s_notification_title_labels[MAX_NOTIFICATION_CARDS] = {NULL};
@@ -2117,27 +2123,39 @@ static void clear_weather_icons(void)
 // Clear calendar cards (deletes the card objects and their children)
 static void clear_calendar_cards(void)
 {
+    // Delete scroll container (deletes all children including time axis, events, now line)
+    if (s_calendar_scroll) {
+        lv_obj_delete(s_calendar_scroll);
+        s_calendar_scroll = NULL;
+    }
+    s_calendar_now_line = NULL;
+
+    // Clear time axis label pointers
+    for (int i = 0; i < 18; i++) {
+        s_calendar_time_axis_labels[i] = NULL;
+    }
+
+    // Clear card pointers (cards are children of scroll, already deleted)
     for (int i = 0; i < MAX_CALENDAR_CARDS; i++) {
-        if (s_calendar_cards[i]) {
-            lv_obj_delete(s_calendar_cards[i]);
-            s_calendar_cards[i] = NULL;
-        }
-        // Labels are children of cards, so they get deleted automatically
+        s_calendar_cards[i] = NULL;
         s_calendar_time_labels[i] = NULL;
         s_calendar_title_labels[i] = NULL;
         s_calendar_location_labels[i] = NULL;
     }
 }
 
-// Clear notification cards (deletes the card objects and their children)
+// Clear notification cards (deletes the scroll container and all children)
 static void clear_notification_cards(void)
 {
+    // Delete scroll container (deletes all children including cards)
+    if (s_notification_scroll) {
+        lv_obj_delete(s_notification_scroll);
+        s_notification_scroll = NULL;
+    }
+
+    // Clear pointers (cards are children of scroll, already deleted)
     for (int i = 0; i < MAX_NOTIFICATION_CARDS; i++) {
-        if (s_notification_cards[i]) {
-            lv_obj_delete(s_notification_cards[i]);
-            s_notification_cards[i] = NULL;
-        }
-        // Labels are children of cards, so they get deleted automatically
+        s_notification_cards[i] = NULL;
         s_notification_sender_labels[i] = NULL;
         s_notification_title_labels[i] = NULL;
     }
@@ -2172,6 +2190,9 @@ static void hide_all_screen_elements(void)
     s_renderer.target_pet_offset_x = 0.0f;
     s_renderer.target_pet_offset_y = 0.0f;
     s_renderer.cat_mode = false;
+
+    // Reset caption to bottom position (default for face mode)
+    lv_obj_set_pos(s_renderer.caption_label, 12, s_renderer.height - 40);
 
     // Hide face elements - move ALL off-screen AND hide to ensure LVGL clears the area
     // Moving off-screen forces LVGL to redraw the old position with background
@@ -2952,7 +2973,7 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
     }
 }
 
-void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
+void face_renderer_show_calendar(const calendar_event_t *events, int num_events, int now_hour, int now_minute)
 {
     if (!s_renderer.initialized || !events) return;
     if (num_events < 1) num_events = 1;
@@ -2960,56 +2981,138 @@ void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
 
     if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
         if (bsp_display_lock(500)) {
-            // Set mode AFTER acquiring display lock to ensure hide_all_screen_elements runs
+            // Set mode AFTER acquiring display lock
             s_renderer.mode = DISPLAY_MODE_CALENDAR;
             hide_all_screen_elements();
 
             lv_obj_t *scr = lv_scr_act();
 
-            // Card dimensions - Apple Watch style (adjusted for screen bezel)
-            int margin_x = 35;  // Increased for bezel
-            int card_width = s_renderer.width - (margin_x * 2);
-            int card_height = (num_events == 1) ? 170 :
-                              (num_events == 2) ? 120 : 95;  // Slightly smaller to fit in safe area
-            int card_spacing = 10;
-            int start_y = 45;  // Start below top (increased for bezel)
+            // Day view layout constants
+            const int START_HOUR = 6;     // Day view starts at 6 AM
+            const int END_HOUR = 23;      // Day view ends at 11 PM
+            const int HOUR_HEIGHT = 50;   // Pixels per hour
+            const int TIME_AXIS_WIDTH = 55;  // Width of time axis
+            const int MARGIN_X = 30;      // Left margin
+            const int MARGIN_TOP = 10;    // Top margin for scroll area
+            const int SCROLL_HEIGHT = s_renderer.height - MARGIN_TOP;  // Full height for scroll
+
+            int total_hours = END_HOUR - START_HOUR;
+            int content_height = total_hours * HOUR_HEIGHT + 40;  // Extra padding at bottom
+
+            // Create scrollable container (full screen, scrolls vertically)
+            s_calendar_scroll = lv_obj_create(scr);
+            lv_obj_remove_style_all(s_calendar_scroll);
+            lv_obj_set_size(s_calendar_scroll, s_renderer.width, SCROLL_HEIGHT);
+            lv_obj_set_pos(s_calendar_scroll, 0, MARGIN_TOP);
+            lv_obj_set_style_bg_opa(s_calendar_scroll, LV_OPA_TRANSP, 0);
+            lv_obj_set_scroll_dir(s_calendar_scroll, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(s_calendar_scroll, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(s_calendar_scroll, LV_OBJ_FLAG_SCROLL_ELASTIC);
+
+            // Draw time axis labels (6AM, 7AM, ... 11PM)
+            for (int h = START_HOUR; h <= END_HOUR; h++) {
+                int idx = h - START_HOUR;
+                int y_pos = idx * HOUR_HEIGHT;
+
+                // Hour label - clearer format
+                s_calendar_time_axis_labels[idx] = lv_label_create(s_calendar_scroll);
+                char hour_str[12];
+                int display_hour = h % 12;
+                if (display_hour == 0) display_hour = 12;
+                snprintf(hour_str, sizeof(hour_str), "%d%s", display_hour, h < 12 ? "AM" : "PM");
+                lv_label_set_text(s_calendar_time_axis_labels[idx], hour_str);
+                lv_obj_set_style_text_color(s_calendar_time_axis_labels[idx], lv_color_hex(COLOR_TEXT_SECONDARY), 0);
+                lv_obj_set_style_text_font(s_calendar_time_axis_labels[idx], &lv_font_montserrat_14, 0);
+                lv_obj_set_pos(s_calendar_time_axis_labels[idx], MARGIN_X, y_pos);
+
+                // Hour line (subtle gray)
+                lv_obj_t *line = lv_obj_create(s_calendar_scroll);
+                lv_obj_remove_style_all(line);
+                lv_obj_set_size(line, s_renderer.width - MARGIN_X - TIME_AXIS_WIDTH - 20, 1);
+                lv_obj_set_pos(line, MARGIN_X + TIME_AXIS_WIDTH, y_pos + 8);
+                lv_obj_set_style_bg_color(line, lv_color_hex(0x333333), 0);
+                lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
+            }
+
+            // Draw event cards positioned by time
+            int card_x = MARGIN_X + TIME_AXIS_WIDTH + 5;
+            int card_width = s_renderer.width - card_x - 25;
 
             for (int i = 0; i < num_events; i++) {
-                // Create card container
-                int card_y = start_y + i * (card_height + card_spacing);
-                s_calendar_cards[i] = create_card(scr, margin_x, card_y, card_width, card_height);
+                // Calculate Y position based on event start time
+                int event_start_mins = events[i].start_hour * 60 + events[i].start_minute;
+                int day_start_mins = START_HOUR * 60;
+                int y_offset = ((event_start_mins - day_start_mins) * HOUR_HEIGHT) / 60;
 
-                // Time label (blue accent at top of card)
-                s_calendar_time_labels[i] = lv_label_create(s_calendar_cards[i]);
-                lv_label_set_text(s_calendar_time_labels[i], events[i].time_str);
-                lv_obj_set_style_text_color(s_calendar_time_labels[i], lv_color_hex(COLOR_ACCENT_BLUE), 0);
-                lv_obj_set_style_text_font(s_calendar_time_labels[i], &lv_font_montserrat_20, 0);
-                lv_obj_align(s_calendar_time_labels[i], LV_ALIGN_TOP_LEFT, 0, 0);
+                // Calculate height based on duration
+                int event_end_mins = events[i].end_hour * 60 + events[i].end_minute;
+                int duration_mins = event_end_mins - event_start_mins;
+                if (duration_mins < 30) duration_mins = 30;  // Minimum height
+                int card_height = (duration_mins * HOUR_HEIGHT) / 60;
+                if (card_height < 45) card_height = 45;  // Minimum visible height
 
-                // Title label (white, bold - using larger font)
+                // Create event card
+                s_calendar_cards[i] = lv_obj_create(s_calendar_scroll);
+                lv_obj_remove_style_all(s_calendar_cards[i]);
+                lv_obj_set_size(s_calendar_cards[i], card_width, card_height);
+                lv_obj_set_pos(s_calendar_cards[i], card_x, y_offset);
+                lv_obj_set_style_bg_color(s_calendar_cards[i], lv_color_hex(COLOR_ACCENT_BLUE), 0);
+                lv_obj_set_style_bg_opa(s_calendar_cards[i], LV_OPA_80, 0);
+                lv_obj_set_style_radius(s_calendar_cards[i], 8, 0);
+                lv_obj_set_style_pad_all(s_calendar_cards[i], 8, 0);
+                lv_obj_clear_flag(s_calendar_cards[i], LV_OBJ_FLAG_SCROLLABLE);
+
+                // Event title (larger font for readability)
                 s_calendar_title_labels[i] = lv_label_create(s_calendar_cards[i]);
                 lv_label_set_text(s_calendar_title_labels[i], events[i].title);
-                lv_obj_set_style_text_color(s_calendar_title_labels[i], lv_color_hex(COLOR_TEXT_PRIMARY), 0);
-                lv_obj_set_style_text_font(s_calendar_title_labels[i], &lv_font_montserrat_28, 0);
-                lv_obj_set_width(s_calendar_title_labels[i], card_width - 2 * CARD_PADDING);
-                lv_label_set_long_mode(s_calendar_title_labels[i], LV_LABEL_LONG_WRAP);
-                lv_obj_align(s_calendar_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 26);
+                lv_obj_set_style_text_color(s_calendar_title_labels[i], lv_color_white(), 0);
+                lv_obj_set_style_text_font(s_calendar_title_labels[i], &lv_font_montserrat_20, 0);
+                lv_obj_set_width(s_calendar_title_labels[i], card_width - 16);
+                lv_label_set_long_mode(s_calendar_title_labels[i], LV_LABEL_LONG_DOT);
+                lv_obj_align(s_calendar_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 0);
 
-                // Location label (gray secondary text, if provided)
-                if (events[i].location[0] != '\0') {
-                    s_calendar_location_labels[i] = lv_label_create(s_calendar_cards[i]);
-                    lv_label_set_text(s_calendar_location_labels[i], events[i].location);
-                    lv_obj_set_style_text_color(s_calendar_location_labels[i], lv_color_hex(COLOR_TEXT_SECONDARY), 0);
-                    lv_obj_set_style_text_font(s_calendar_location_labels[i], &lv_font_montserrat_20, 0);
-                    lv_obj_set_width(s_calendar_location_labels[i], card_width - 2 * CARD_PADDING);
-                    lv_label_set_long_mode(s_calendar_location_labels[i], LV_LABEL_LONG_DOT);
-                    lv_obj_align(s_calendar_location_labels[i], LV_ALIGN_TOP_LEFT, 0,
-                                 num_events == 1 ? 70 : 58);
+                // Time label (below title)
+                if (card_height >= 60) {
+                    s_calendar_time_labels[i] = lv_label_create(s_calendar_cards[i]);
+                    lv_label_set_text(s_calendar_time_labels[i], events[i].time_str);
+                    lv_obj_set_style_text_color(s_calendar_time_labels[i], lv_color_hex(0xCCCCCC), 0);
+                    lv_obj_set_style_text_font(s_calendar_time_labels[i], &lv_font_montserrat_14, 0);
+                    lv_obj_align(s_calendar_time_labels[i], LV_ALIGN_TOP_LEFT, 0, 26);
                 }
             }
 
+            // Draw "now" line (red horizontal line at current time)
+            if (now_hour >= START_HOUR && now_hour <= END_HOUR) {
+                int now_mins = now_hour * 60 + now_minute;
+                int day_start_mins = START_HOUR * 60;
+                int now_y = ((now_mins - day_start_mins) * HOUR_HEIGHT) / 60;
+
+                // Red circle on left
+                lv_obj_t *now_dot = lv_obj_create(s_calendar_scroll);
+                lv_obj_remove_style_all(now_dot);
+                lv_obj_set_size(now_dot, 8, 8);
+                lv_obj_set_pos(now_dot, MARGIN_X + TIME_AXIS_WIDTH - 4, now_y + 4);
+                lv_obj_set_style_bg_color(now_dot, lv_color_hex(COLOR_ACCENT_RED), 0);
+                lv_obj_set_style_bg_opa(now_dot, LV_OPA_COVER, 0);
+                lv_obj_set_style_radius(now_dot, LV_RADIUS_CIRCLE, 0);
+
+                // Red line across
+                s_calendar_now_line = lv_obj_create(s_calendar_scroll);
+                lv_obj_remove_style_all(s_calendar_now_line);
+                lv_obj_set_size(s_calendar_now_line, s_renderer.width - MARGIN_X - TIME_AXIS_WIDTH - 20, 2);
+                lv_obj_set_pos(s_calendar_now_line, MARGIN_X + TIME_AXIS_WIDTH, now_y + 7);
+                lv_obj_set_style_bg_color(s_calendar_now_line, lv_color_hex(COLOR_ACCENT_RED), 0);
+                lv_obj_set_style_bg_opa(s_calendar_now_line, LV_OPA_COVER, 0);
+
+                // Scroll to show current time (center it in view)
+                int scroll_to = now_y - SCROLL_HEIGHT / 2;
+                if (scroll_to < 0) scroll_to = 0;
+                if (scroll_to > content_height - SCROLL_HEIGHT) scroll_to = content_height - SCROLL_HEIGHT;
+                lv_obj_scroll_to_y(s_calendar_scroll, scroll_to, LV_ANIM_OFF);
+            }
+
             bsp_display_unlock();
-            ESP_LOGI(TAG, "Calendar display: %d events", num_events);
+            ESP_LOGI(TAG, "Calendar day view: %d events, now=%d:%02d", num_events, now_hour, now_minute);
         } else {
             ESP_LOGE(TAG, "Failed to acquire display lock for calendar");
         }
@@ -3032,38 +3135,65 @@ void face_renderer_show_notifications(const calendar_event_t *events, int num_ev
 
             lv_obj_t *scr = lv_scr_act();
 
-            // Card dimensions - Apple Watch style (adjusted for screen bezel)
-            int margin_x = 35;  // Increased for bezel
-            int card_width = s_renderer.width - (margin_x * 2);
-            int card_height = (num_events == 1) ? 170 :
-                              (num_events == 2) ? 120 : 95;  // Slightly smaller to fit in safe area
-            int card_spacing = 10;
-            int start_y = 45;  // Start below top (increased for bezel)
+            // Move caption to TOP for notifications (so AI response is above scroll)
+            lv_obj_set_pos(s_renderer.caption_label, 12, 5);
+
+            // Layout constants - scroll area starts below caption
+            const int MARGIN_TOP = 35;  // Leave room for caption at top
+            const int MARGIN_X = 25;
+            const int SCROLL_HEIGHT = s_renderer.height - MARGIN_TOP - 20;
+
+            // Card dimensions - fixed size for consistency
+            int card_width = s_renderer.width - (MARGIN_X * 2);
+            int card_height = 120;
+            int card_spacing = 12;
+
+            // Calculate content height
+            int content_height = num_events * (card_height + card_spacing) + 20;
+
+            // Create scrollable container
+            s_notification_scroll = lv_obj_create(scr);
+            lv_obj_remove_style_all(s_notification_scroll);
+            lv_obj_set_size(s_notification_scroll, s_renderer.width, SCROLL_HEIGHT);
+            lv_obj_set_pos(s_notification_scroll, 0, MARGIN_TOP);
+            lv_obj_set_style_bg_opa(s_notification_scroll, LV_OPA_TRANSP, 0);
+            lv_obj_set_scroll_dir(s_notification_scroll, LV_DIR_VER);
+            lv_obj_set_scrollbar_mode(s_notification_scroll, LV_SCROLLBAR_MODE_OFF);
+            lv_obj_clear_flag(s_notification_scroll, LV_OBJ_FLAG_SCROLL_ELASTIC);
 
             for (int i = 0; i < num_events; i++) {
-                // Create card container
-                int card_y = start_y + i * (card_height + card_spacing);
-                s_notification_cards[i] = create_card(scr, margin_x, card_y, card_width, card_height);
+                // Create card container inside scroll
+                int card_y = i * (card_height + card_spacing);
 
-                // Sender label (orange accent at top of card - different from calendar blue)
+                s_notification_cards[i] = lv_obj_create(s_notification_scroll);
+                lv_obj_remove_style_all(s_notification_cards[i]);
+                lv_obj_set_size(s_notification_cards[i], card_width, card_height);
+                lv_obj_set_pos(s_notification_cards[i], MARGIN_X, card_y);
+                lv_obj_set_style_bg_color(s_notification_cards[i], lv_color_hex(0x2A2A35), 0);
+                lv_obj_set_style_bg_opa(s_notification_cards[i], LV_OPA_COVER, 0);
+                lv_obj_set_style_radius(s_notification_cards[i], 16, 0);
+                lv_obj_set_style_pad_all(s_notification_cards[i], 12, 0);
+                lv_obj_clear_flag(s_notification_cards[i], LV_OBJ_FLAG_SCROLLABLE);
+
+                // Sender label (orange accent at top of card)
                 s_notification_sender_labels[i] = lv_label_create(s_notification_cards[i]);
                 lv_label_set_text(s_notification_sender_labels[i], events[i].time_str);  // time_str = sender
                 lv_obj_set_style_text_color(s_notification_sender_labels[i], lv_color_hex(COLOR_ACCENT_ORANGE), 0);
                 lv_obj_set_style_text_font(s_notification_sender_labels[i], &lv_font_montserrat_20, 0);
                 lv_obj_align(s_notification_sender_labels[i], LV_ALIGN_TOP_LEFT, 0, 0);
 
-                // Subject/title label (white, bold - using larger font)
+                // Subject/title label (white, larger font)
                 s_notification_title_labels[i] = lv_label_create(s_notification_cards[i]);
                 lv_label_set_text(s_notification_title_labels[i], events[i].title);
                 lv_obj_set_style_text_color(s_notification_title_labels[i], lv_color_hex(COLOR_TEXT_PRIMARY), 0);
                 lv_obj_set_style_text_font(s_notification_title_labels[i], &lv_font_montserrat_28, 0);
-                lv_obj_set_width(s_notification_title_labels[i], card_width - 2 * CARD_PADDING);
+                lv_obj_set_width(s_notification_title_labels[i], card_width - 24);
                 lv_label_set_long_mode(s_notification_title_labels[i], LV_LABEL_LONG_WRAP);
-                lv_obj_align(s_notification_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 26);
+                lv_obj_align(s_notification_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 28);
             }
 
             bsp_display_unlock();
-            ESP_LOGI(TAG, "Notifications display: %d items", num_events);
+            ESP_LOGI(TAG, "Notifications display: %d items (scrollable)", num_events);
         } else {
             ESP_LOGE(TAG, "Failed to acquire display lock for notifications");
         }

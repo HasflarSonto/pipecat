@@ -298,6 +298,12 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
     else if (strcmp(cmd_str, "calendar") == 0) {
         cmd->type = LUNA_CMD_CALENDAR;
         cJSON *events = cJSON_GetObjectItem(root, "events");
+        cJSON *now_hour = cJSON_GetObjectItem(root, "now_hour");
+        cJSON *now_minute = cJSON_GetObjectItem(root, "now_minute");
+
+        // Parse current time for "now" line
+        cmd->data.calendar.now_hour = (now_hour && cJSON_IsNumber(now_hour)) ? now_hour->valueint : 12;
+        cmd->data.calendar.now_minute = (now_minute && cJSON_IsNumber(now_minute)) ? now_minute->valueint : 0;
 
         cmd->data.calendar.num_events = 0;
         if (events && cJSON_IsArray(events)) {
@@ -311,6 +317,10 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
                     cJSON *time_str = cJSON_GetObjectItem(event, "time_str");
                     cJSON *title = cJSON_GetObjectItem(event, "title");
                     cJSON *location = cJSON_GetObjectItem(event, "location");
+                    cJSON *start_hour = cJSON_GetObjectItem(event, "start_hour");
+                    cJSON *start_minute = cJSON_GetObjectItem(event, "start_minute");
+                    cJSON *end_hour = cJSON_GetObjectItem(event, "end_hour");
+                    cJSON *end_minute = cJSON_GetObjectItem(event, "end_minute");
 
                     if (time_str && cJSON_IsString(time_str)) {
                         strncpy(e->time_str, time_str->valuestring, sizeof(e->time_str) - 1);
@@ -321,11 +331,16 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
                     if (location && cJSON_IsString(location)) {
                         strncpy(e->location, location->valuestring, sizeof(e->location) - 1);
                     }
+                    e->start_hour = (start_hour && cJSON_IsNumber(start_hour)) ? start_hour->valueint : 9;
+                    e->start_minute = (start_minute && cJSON_IsNumber(start_minute)) ? start_minute->valueint : 0;
+                    e->end_hour = (end_hour && cJSON_IsNumber(end_hour)) ? end_hour->valueint : e->start_hour + 1;
+                    e->end_minute = (end_minute && cJSON_IsNumber(end_minute)) ? end_minute->valueint : 0;
                     cmd->data.calendar.num_events++;
                 }
             }
         }
-        ESP_LOGD(TAG, "Parsed calendar: %d events", cmd->data.calendar.num_events);
+        ESP_LOGI(TAG, "Parsed calendar: %d events, now=%d:%02d",
+                 cmd->data.calendar.num_events, cmd->data.calendar.now_hour, cmd->data.calendar.now_minute);
     }
     else if (strcmp(cmd_str, "notifications") == 0) {
         cmd->type = LUNA_CMD_NOTIFICATIONS;

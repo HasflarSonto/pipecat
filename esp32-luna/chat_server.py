@@ -265,41 +265,71 @@ async def fetch_calendar_events(max_results: int = 5) -> Dict[str, Any]:
         for event in items:
             # Get start time
             start = event.get('start', {})
+            end = event.get('end', {})
+
             if 'dateTime' in start:
-                event_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
-                event_time = event_time.astimezone(tz)
-                time_str = event_time.strftime("%I:%M %p").lstrip('0')
+                event_start = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                event_start = event_start.astimezone(tz)
+                time_str = event_start.strftime("%I:%M %p").lstrip('0')
+                start_hour = event_start.hour
+                start_minute = event_start.minute
+
+                # Get end time for duration
+                if 'dateTime' in end:
+                    event_end = datetime.fromisoformat(end['dateTime'].replace('Z', '+00:00'))
+                    event_end = event_end.astimezone(tz)
+                    end_hour = event_end.hour
+                    end_minute = event_end.minute
+                else:
+                    end_hour = start_hour + 1
+                    end_minute = start_minute
             else:
-                # All-day event
+                # All-day event - show at top
                 time_str = "All day"
+                start_hour = 0
+                start_minute = 0
+                end_hour = 23
+                end_minute = 59
 
             # Get title and location
             title = event.get('summary', '(No title)')
             location = event.get('location', '')
 
             # Truncate for display
-            if len(title) > 40:
-                title = title[:37] + "..."
-            if len(location) > 30:
-                location = location[:27] + "..."
+            if len(title) > 30:
+                title = title[:27] + "..."
+            if len(location) > 25:
+                location = location[:22] + "..."
 
             events.append({
                 "time_str": time_str,
                 "title": title,
-                "location": location
+                "location": location,
+                "start_hour": start_hour,
+                "start_minute": start_minute,
+                "end_hour": end_hour,
+                "end_minute": end_minute
             })
 
-        return {
+        result = {
             "count": len(events),
             "events": events,
+            "current_hour": now.hour,
+            "current_minute": now.minute,
             "error": None
         }
+        print(f"[DEBUG] fetch_calendar_events returning: now={now.hour}:{now.minute:02d} ({now.strftime('%I:%M %p %Z')})")
+        return result
 
     except Exception as e:
         print(f"Calendar API error: {e}")
+        tz = pytz.timezone("America/New_York")
+        now = datetime.now(tz)
         return {
             "count": 0,
             "events": [],
+            "current_hour": now.hour,
+            "current_minute": now.minute,
             "error": str(e)
         }
 
@@ -779,18 +809,27 @@ async def handle_tool_call(tool_name: str, tool_input: dict) -> str:
             })
             return "No calendar events today"
 
-        # Format for calendar display on ESP32
+        # Format for calendar display on ESP32 with time positioning
         events = []
         for event in calendar_data["events"][:5]:  # Max 5 for calendar display
             events.append({
                 "time_str": event["time_str"],
                 "title": event["title"],
-                "location": event["location"]
+                "location": event["location"],
+                "start_hour": event["start_hour"],
+                "start_minute": event["start_minute"],
+                "end_hour": event["end_hour"],
+                "end_minute": event["end_minute"]
             })
 
+        now_h = calendar_data["current_hour"]
+        now_m = calendar_data["current_minute"]
+        print(f"[DEBUG] Sending calendar with now_hour={now_h}, now_minute={now_m}")
         await send_esp32_command({
             "cmd": "calendar",
-            "events": events
+            "events": events,
+            "now_hour": now_h,
+            "now_minute": now_m
         })
         return f"Showing {calendar_data['count']} calendar event(s)"
 
@@ -825,9 +864,9 @@ async def get_claude_response(user_input: str) -> str:
             system="""You are Luna, a friendly robot on a tiny ESP32 screen.
 
 RULES:
-- ALL responses: ONE short sentence max (under 50 characters)
-- Tool actions: Just "Here!" or "There you go!"
-- Casual chat: Brief but warm, like "Doing great, thanks!"
+- ALL responses: Max 8 words, one short sentence
+- Tool actions: Just "Here!" or "Done!"
+- Casual chat: Brief but warm, like "Doing great!"
 - Default: NYC weather, 1 train 110 St downtown
 - NEVER use emojis in responses""",
             tools=TOOLS,
