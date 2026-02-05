@@ -13,6 +13,7 @@ Usage:
 
 Requires:
     pip install websockets anthropic aiohttp pytz gtfs-realtime-bindings
+    pip install google-auth-oauthlib google-api-python-client
 """
 
 import asyncio
@@ -65,6 +66,157 @@ try:
 except ImportError:
     print("Error: pytz not installed. Run: pip install pytz")
     sys.exit(1)
+
+# Gmail API (optional - will warn if not installed)
+gmail_service = None
+GMAIL_AVAILABLE = False
+try:
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from google.auth.transport.requests import Request
+    from googleapiclient.discovery import build
+    GMAIL_AVAILABLE = True
+except ImportError:
+    print("Warning: Gmail dependencies not installed. Run: pip install google-auth-oauthlib google-api-python-client")
+
+# Gmail OAuth scopes
+GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
+GMAIL_TOKEN_PATH = Path(__file__).parent / "gmail_token.json"
+
+
+def init_gmail_service():
+    """Initialize Gmail API service with OAuth."""
+    global gmail_service
+
+    if not GMAIL_AVAILABLE:
+        return None
+
+    client_id = os.environ.get('GMAIL_CLIENT_ID')
+    client_secret = os.environ.get('GMAIL_CLIENT_SECRET')
+
+    if not client_id or not client_secret:
+        print("Warning: GMAIL_CLIENT_ID or GMAIL_CLIENT_SECRET not set in .env")
+        return None
+
+    creds = None
+
+    # Load existing token if available
+    if GMAIL_TOKEN_PATH.exists():
+        try:
+            creds = Credentials.from_authorized_user_file(str(GMAIL_TOKEN_PATH), GMAIL_SCOPES)
+        except Exception as e:
+            print(f"Error loading Gmail token: {e}")
+
+    # Refresh or get new credentials
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"Error refreshing Gmail token: {e}")
+                creds = None
+
+        if not creds:
+            # Need to do OAuth flow
+            flow = InstalledAppFlow.from_client_config(
+                {
+                    "installed": {
+                        "client_id": client_id,
+                        "client_secret": client_secret,
+                        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                        "token_uri": "https://oauth2.googleapis.com/token",
+                        "redirect_uris": ["http://localhost"]
+                    }
+                },
+                GMAIL_SCOPES
+            )
+            print("\n" + "="*50)
+            print("Gmail Authorization Required")
+            print("A browser window will open for you to sign in...")
+            print("="*50 + "\n")
+            creds = flow.run_local_server(port=0)
+
+        # Save credentials for next time
+        with open(GMAIL_TOKEN_PATH, 'w') as f:
+            f.write(creds.to_json())
+        print(f"Gmail token saved to: {GMAIL_TOKEN_PATH}")
+
+    try:
+        gmail_service = build('gmail', 'v1', credentials=creds)
+        print("Gmail API initialized successfully")
+        return gmail_service
+    except Exception as e:
+        print(f"Error building Gmail service: {e}")
+        return None
+
+
+async def fetch_gmail_notifications(max_results: int = 5) -> Dict[str, Any]:
+    """Fetch unread emails from Gmail."""
+    global gmail_service
+
+    if not gmail_service:
+        gmail_service = init_gmail_service()
+
+    if not gmail_service:
+        return {
+            "count": 0,
+            "emails": [],
+            "error": "Gmail not configured"
+        }
+
+    try:
+        # Get unread messages
+        results = gmail_service.users().messages().list(
+            userId='me',
+            q='is:unread',
+            maxResults=max_results
+        ).execute()
+
+        messages = results.get('messages', [])
+        emails = []
+
+        for msg in messages:
+            msg_data = gmail_service.users().messages().get(
+                userId='me',
+                id=msg['id'],
+                format='metadata',
+                metadataHeaders=['From', 'Subject']
+            ).execute()
+
+            headers = {h['name']: h['value'] for h in msg_data.get('payload', {}).get('headers', [])}
+
+            # Parse sender name
+            from_header = headers.get('From', 'Unknown')
+            if '<' in from_header:
+                sender = from_header.split('<')[0].strip().strip('"')
+            else:
+                sender = from_header.split('@')[0]
+
+            # Truncate for display
+            subject = headers.get('Subject', '(No subject)')
+            if len(subject) > 40:
+                subject = subject[:37] + "..."
+            if len(sender) > 20:
+                sender = sender[:17] + "..."
+
+            emails.append({
+                "sender": sender,
+                "subject": subject
+            })
+
+        return {
+            "count": len(emails),
+            "emails": emails,
+            "error": None
+        }
+
+    except Exception as e:
+        print(f"Gmail API error: {e}")
+        return {
+            "count": 0,
+            "emails": [],
+            "error": str(e)
+        }
 
 
 # Connected ESP32 clients
@@ -373,6 +525,19 @@ TOOLS = [
             },
             "required": ["emotion"]
         }
+    },
+    {
+        "name": "show_notifications",
+        "description": "Show Gmail notifications/unread emails on the ESP32 display. Use when user asks about emails, notifications, or messages.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of emails to show (1-5, default 3)"
+                }
+            }
+        }
     }
 ]
 
@@ -465,6 +630,39 @@ async def handle_tool_call(tool_name: str, tool_input: dict) -> str:
         })
         return f"Set emotion: {emotion}"
 
+    elif tool_name == "show_notifications":
+        max_results = min(tool_input.get("max_results", 3), 5)
+        print(f"  [Fetching Gmail notifications...]")
+        gmail_data = await fetch_gmail_notifications(max_results)
+
+        if gmail_data.get("error"):
+            return f"Gmail error: {gmail_data['error']}"
+
+        if gmail_data["count"] == 0:
+            await send_esp32_command({
+                "cmd": "text",
+                "content": "No unread emails!",
+                "size": "large",
+                "color": "#00FF00",
+                "bg": "#1E1E28"
+            })
+            return "No unread emails"
+
+        # Format for calendar-style display on ESP32
+        events = []
+        for email in gmail_data["emails"][:3]:  # Max 3 for calendar display
+            events.append({
+                "time_str": email["sender"],
+                "title": email["subject"],
+                "location": ""
+            })
+
+        await send_esp32_command({
+            "cmd": "calendar",
+            "events": events
+        })
+        return f"Showing {gmail_data['count']} unread email(s)"
+
     return "Unknown tool"
 
 
@@ -494,9 +692,10 @@ You have tools to control what's shown on the display with REAL data.
 
 Guidelines:
 - Keep text responses very short (1-2 sentences) since they display on a small screen
-- Use tools to fetch real data (weather, time, subway times)
+- Use tools to fetch real data (weather, time, subway times, Gmail notifications)
 - For weather, ask about location if not specified
 - For subway, default to 1 train at 110 St downtown if not specified
+- For emails/notifications, use show_notifications to display unread Gmail
 - Be helpful and friendly!""",
             tools=TOOLS,
             messages=messages
