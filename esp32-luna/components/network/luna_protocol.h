@@ -33,6 +33,7 @@ typedef enum {
     LUNA_CMD_ANIMATION,        // {"cmd": "animation", "type": "rain"}
     LUNA_CMD_CLEAR_DISPLAY,    // {"cmd": "clear_display"}
     LUNA_CMD_SUBWAY,           // {"cmd": "subway", "line": "1", "color": "#EE352E", "station": "110 St", "direction": "↓", "times": [3, 8, 12]}
+    LUNA_CMD_CALENDAR,         // {"cmd": "calendar", "events": [{time_str, title, location}, ...]}
 } luna_cmd_type_t;
 
 /**
@@ -136,6 +137,23 @@ typedef struct {
 } luna_cmd_subway_t;
 
 /**
+ * @brief Calendar event for notifications
+ */
+typedef struct {
+    char time_str[32];    // Time/sender string
+    char title[64];       // Title/subject
+    char location[64];    // Location (optional)
+} luna_calendar_event_t;
+
+/**
+ * @brief Calendar command data
+ */
+typedef struct {
+    luna_calendar_event_t events[3];  // Max 3 events
+    int num_events;                   // Number of events (1-3)
+} luna_cmd_calendar_t;
+
+/**
  * @brief Parsed command structure
  */
 typedef struct {
@@ -150,6 +168,7 @@ typedef struct {
         luna_cmd_clock_t clock;
         luna_cmd_animation_t animation;
         luna_cmd_subway_t subway;
+        luna_cmd_calendar_t calendar;
     } data;
 } luna_cmd_t;
 

@@ -175,6 +175,19 @@ static void handle_ws_command(const char *json_str)
             ESP_LOGI(TAG, "Clear display -> face mode");
             break;
 
+        case LUNA_CMD_CALENDAR: {
+            // Convert luna_calendar_event_t to calendar_event_t for face_renderer
+            calendar_event_t events[3];
+            for (int i = 0; i < cmd.data.calendar.num_events && i < 3; i++) {
+                strncpy(events[i].time_str, cmd.data.calendar.events[i].time_str, sizeof(events[i].time_str) - 1);
+                strncpy(events[i].title, cmd.data.calendar.events[i].title, sizeof(events[i].title) - 1);
+                strncpy(events[i].location, cmd.data.calendar.events[i].location, sizeof(events[i].location) - 1);
+            }
+            face_renderer_show_calendar(events, cmd.data.calendar.num_events);
+            ESP_LOGI(TAG, "Show calendar: %d events", cmd.data.calendar.num_events);
+            break;
+        }
+
         default:
             ESP_LOGD(TAG, "Unhandled command type: %d", cmd.type);
             break;
