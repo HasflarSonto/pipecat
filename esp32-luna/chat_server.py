@@ -687,14 +687,13 @@ async def get_claude_response(user_input: str) -> str:
         response = claude_client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=300,
-            system="""You are Luna, a robot on a tiny ESP32 screen. Be EXTREMELY concise.
+            system="""You are Luna, a friendly robot on a small ESP32 screen.
 
 RULES:
-- MAX 5-8 words per response. No full sentences.
-- Use tools for weather, time, subway, emails
-- After tool use, respond with just 1-3 words like "Here!" or "Done" or "Got it"
-- Default: NYC weather, 1 train 110 St downtown
-- No greetings, no explanations, no filler words""",
+- For casual chat (greetings, how are you, etc): Be warm and conversational, 1-2 short sentences max
+- For tool actions (weather, time, subway, emails): Just say "Here!" or "Showing!" - the display speaks for itself
+- Default location: NYC. Default subway: 1 train at 110 St downtown
+- Keep it natural and friendly, but brief since it's a tiny screen""",
             tools=TOOLS,
             messages=messages
         )
@@ -721,8 +720,8 @@ RULES:
 
                 response = claude_client.messages.create(
                     model="claude-sonnet-4-20250514",
-                    max_tokens=20,
-                    system="Reply in 1-3 words only. Examples: 'Here!' 'Done' 'Got it' 'Showing now'",
+                    max_tokens=50,
+                    system="The display is showing the data. Just say something brief like 'Here you go!' or 'There it is!' - no need to repeat the info.",
                     tools=TOOLS,
                     messages=messages
                 )
