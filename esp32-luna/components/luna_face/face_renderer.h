@@ -29,6 +29,7 @@ typedef enum {
     DISPLAY_MODE_ANIMATION,   // Custom animations (rain, snow, etc.)
     DISPLAY_MODE_SUBWAY,      // MTA subway arrival times
     DISPLAY_MODE_CALENDAR,    // Calendar events (Apple Watch style cards)
+    DISPLAY_MODE_NOTIFICATIONS, // Email/notifications (Apple Watch style cards)
 } display_mode_t;
 
 /**
@@ -267,9 +268,16 @@ void face_renderer_show_subway(const char *line, uint32_t line_color,
 /**
  * @brief Show calendar display (Apple Watch style cards)
  * @param events Array of calendar events
- * @param num_events Number of events (1-3)
+ * @param num_events Number of events (1-5)
  */
 void face_renderer_show_calendar(const calendar_event_t *events, int num_events);
+
+/**
+ * @brief Show notifications display (Apple Watch style cards)
+ * @param events Array of notification events (uses same struct as calendar)
+ * @param num_events Number of notifications (1-5)
+ */
+void face_renderer_show_notifications(const calendar_event_t *events, int num_events);
 
 /**
  * @brief Show animation

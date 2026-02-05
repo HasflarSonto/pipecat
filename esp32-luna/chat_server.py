@@ -67,45 +67,49 @@ except ImportError:
     print("Error: pytz not installed. Run: pip install pytz")
     sys.exit(1)
 
-# Gmail API (optional - will warn if not installed)
+# Google API (optional - will warn if not installed)
 gmail_service = None
-GMAIL_AVAILABLE = False
+calendar_service = None
+GOOGLE_API_AVAILABLE = False
 try:
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
-    GMAIL_AVAILABLE = True
+    GOOGLE_API_AVAILABLE = True
 except ImportError:
-    print("Warning: Gmail dependencies not installed. Run: pip install google-auth-oauthlib google-api-python-client")
+    print("Warning: Google API dependencies not installed. Run: pip install google-auth-oauthlib google-api-python-client")
 
-# Gmail OAuth scopes
-GMAIL_SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
-GMAIL_TOKEN_PATH = Path(__file__).parent / "gmail_token.json"
+# OAuth scopes (Gmail + Calendar)
+GOOGLE_SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/calendar.readonly'
+]
+GOOGLE_TOKEN_PATH = Path(__file__).parent / "google_token.json"
 
 
-def init_gmail_service():
-    """Initialize Gmail API service with OAuth."""
-    global gmail_service
+def init_google_services():
+    """Initialize Gmail and Calendar API services with OAuth."""
+    global gmail_service, calendar_service
 
-    if not GMAIL_AVAILABLE:
-        return None
+    if not GOOGLE_API_AVAILABLE:
+        return False
 
     client_id = os.environ.get('GMAIL_CLIENT_ID')
     client_secret = os.environ.get('GMAIL_CLIENT_SECRET')
 
     if not client_id or not client_secret:
         print("Warning: GMAIL_CLIENT_ID or GMAIL_CLIENT_SECRET not set in .env")
-        return None
+        return False
 
     creds = None
 
     # Load existing token if available
-    if GMAIL_TOKEN_PATH.exists():
+    if GOOGLE_TOKEN_PATH.exists():
         try:
-            creds = Credentials.from_authorized_user_file(str(GMAIL_TOKEN_PATH), GMAIL_SCOPES)
+            creds = Credentials.from_authorized_user_file(str(GOOGLE_TOKEN_PATH), GOOGLE_SCOPES)
         except Exception as e:
-            print(f"Error loading Gmail token: {e}")
+            print(f"Error loading Google token: {e}")
 
     # Refresh or get new credentials
     if not creds or not creds.valid:
@@ -113,7 +117,7 @@ def init_gmail_service():
             try:
                 creds.refresh(Request())
             except Exception as e:
-                print(f"Error refreshing Gmail token: {e}")
+                print(f"Error refreshing Google token: {e}")
                 creds = None
 
         if not creds:
@@ -128,26 +132,27 @@ def init_gmail_service():
                         "redirect_uris": ["http://localhost"]
                     }
                 },
-                GMAIL_SCOPES
+                GOOGLE_SCOPES
             )
             print("\n" + "="*50)
-            print("Gmail Authorization Required")
+            print("Google Authorization Required (Gmail + Calendar)")
             print("A browser window will open for you to sign in...")
             print("="*50 + "\n")
             creds = flow.run_local_server(port=0)
 
         # Save credentials for next time
-        with open(GMAIL_TOKEN_PATH, 'w') as f:
+        with open(GOOGLE_TOKEN_PATH, 'w') as f:
             f.write(creds.to_json())
-        print(f"Gmail token saved to: {GMAIL_TOKEN_PATH}")
+        print(f"Google token saved to: {GOOGLE_TOKEN_PATH}")
 
     try:
         gmail_service = build('gmail', 'v1', credentials=creds)
-        print("Gmail API initialized successfully")
-        return gmail_service
+        calendar_service = build('calendar', 'v3', credentials=creds)
+        print("Gmail and Calendar APIs initialized successfully")
+        return True
     except Exception as e:
-        print(f"Error building Gmail service: {e}")
-        return None
+        print(f"Error building Google services: {e}")
+        return False
 
 
 async def fetch_gmail_notifications(max_results: int = 5) -> Dict[str, Any]:
@@ -155,7 +160,7 @@ async def fetch_gmail_notifications(max_results: int = 5) -> Dict[str, Any]:
     global gmail_service
 
     if not gmail_service:
-        gmail_service = init_gmail_service()
+        init_google_services()
 
     if not gmail_service:
         return {
@@ -215,6 +220,86 @@ async def fetch_gmail_notifications(max_results: int = 5) -> Dict[str, Any]:
         return {
             "count": 0,
             "emails": [],
+            "error": str(e)
+        }
+
+
+async def fetch_calendar_events(max_results: int = 5) -> Dict[str, Any]:
+    """Fetch today's calendar events from Google Calendar."""
+    global calendar_service
+
+    if not calendar_service:
+        init_google_services()
+
+    if not calendar_service:
+        return {
+            "count": 0,
+            "events": [],
+            "error": "Calendar not configured"
+        }
+
+    try:
+        # Get today's date range in local timezone
+        tz = pytz.timezone("America/New_York")
+        now = datetime.now(tz)
+        start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end_of_day = now.replace(hour=23, minute=59, second=59, microsecond=999999)
+
+        # Format for Google Calendar API
+        time_min = start_of_day.isoformat()
+        time_max = end_of_day.isoformat()
+
+        # Fetch events
+        events_result = calendar_service.events().list(
+            calendarId='primary',
+            timeMin=time_min,
+            timeMax=time_max,
+            maxResults=max_results,
+            singleEvents=True,
+            orderBy='startTime'
+        ).execute()
+
+        items = events_result.get('items', [])
+        events = []
+
+        for event in items:
+            # Get start time
+            start = event.get('start', {})
+            if 'dateTime' in start:
+                event_time = datetime.fromisoformat(start['dateTime'].replace('Z', '+00:00'))
+                event_time = event_time.astimezone(tz)
+                time_str = event_time.strftime("%I:%M %p").lstrip('0')
+            else:
+                # All-day event
+                time_str = "All day"
+
+            # Get title and location
+            title = event.get('summary', '(No title)')
+            location = event.get('location', '')
+
+            # Truncate for display
+            if len(title) > 40:
+                title = title[:37] + "..."
+            if len(location) > 30:
+                location = location[:27] + "..."
+
+            events.append({
+                "time_str": time_str,
+                "title": title,
+                "location": location
+            })
+
+        return {
+            "count": len(events),
+            "events": events,
+            "error": None
+        }
+
+    except Exception as e:
+        print(f"Calendar API error: {e}")
+        return {
+            "count": 0,
+            "events": [],
             "error": str(e)
         }
 
@@ -538,6 +623,19 @@ TOOLS = [
                 }
             }
         }
+    },
+    {
+        "name": "show_calendar",
+        "description": "Show today's calendar events/schedule from Google Calendar. Use when user asks about their calendar, schedule, meetings, or events for today.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of events to show (1-5, default 5)"
+                }
+            }
+        }
     }
 ]
 
@@ -658,10 +756,43 @@ async def handle_tool_call(tool_name: str, tool_input: dict) -> str:
             })
 
         await send_esp32_command({
-            "cmd": "calendar",
+            "cmd": "notifications",
             "events": events
         })
         return f"Showing {gmail_data['count']} unread email(s)"
+
+    elif tool_name == "show_calendar":
+        max_results = min(tool_input.get("max_results", 5), 5)
+        print(f"  [Fetching calendar events...]")
+        calendar_data = await fetch_calendar_events(max_results)
+
+        if calendar_data.get("error"):
+            return f"Calendar error: {calendar_data['error']}"
+
+        if calendar_data["count"] == 0:
+            await send_esp32_command({
+                "cmd": "text",
+                "content": "No events today!",
+                "size": "large",
+                "color": "#00FF00",
+                "bg": "#1E1E28"
+            })
+            return "No calendar events today"
+
+        # Format for calendar display on ESP32
+        events = []
+        for event in calendar_data["events"][:5]:  # Max 5 for calendar display
+            events.append({
+                "time_str": event["time_str"],
+                "title": event["title"],
+                "location": event["location"]
+            })
+
+        await send_esp32_command({
+            "cmd": "calendar",
+            "events": events
+        })
+        return f"Showing {calendar_data['count']} calendar event(s)"
 
     return "Unknown tool"
 
@@ -697,7 +828,8 @@ RULES:
 - ALL responses: ONE short sentence max (under 50 characters)
 - Tool actions: Just "Here!" or "There you go!"
 - Casual chat: Brief but warm, like "Doing great, thanks!"
-- Default: NYC weather, 1 train 110 St downtown""",
+- Default: NYC weather, 1 train 110 St downtown
+- NEVER use emojis in responses""",
             tools=TOOLS,
             messages=messages
         )

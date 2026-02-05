@@ -2087,12 +2087,18 @@ static lv_obj_t *create_card(lv_obj_t *parent, int x, int y, int width, int heig
     return card;
 }
 
-// Calendar card storage (up to 3 events)
-#define MAX_CALENDAR_CARDS 3
-static lv_obj_t *s_calendar_cards[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
-static lv_obj_t *s_calendar_time_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
-static lv_obj_t *s_calendar_title_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
-static lv_obj_t *s_calendar_location_labels[MAX_CALENDAR_CARDS] = {NULL, NULL, NULL};
+// Calendar card storage (up to 5 events for scrolling)
+#define MAX_CALENDAR_CARDS 5
+static lv_obj_t *s_calendar_cards[MAX_CALENDAR_CARDS] = {NULL};
+static lv_obj_t *s_calendar_time_labels[MAX_CALENDAR_CARDS] = {NULL};
+static lv_obj_t *s_calendar_title_labels[MAX_CALENDAR_CARDS] = {NULL};
+static lv_obj_t *s_calendar_location_labels[MAX_CALENDAR_CARDS] = {NULL};
+
+// Notification card storage (up to 5 items for scrolling)
+#define MAX_NOTIFICATION_CARDS 5
+static lv_obj_t *s_notification_cards[MAX_NOTIFICATION_CARDS] = {NULL};
+static lv_obj_t *s_notification_sender_labels[MAX_NOTIFICATION_CARDS] = {NULL};
+static lv_obj_t *s_notification_title_labels[MAX_NOTIFICATION_CARDS] = {NULL};
 
 // Clear weather icon objects and card
 static void clear_weather_icons(void)
@@ -2120,6 +2126,20 @@ static void clear_calendar_cards(void)
         s_calendar_time_labels[i] = NULL;
         s_calendar_title_labels[i] = NULL;
         s_calendar_location_labels[i] = NULL;
+    }
+}
+
+// Clear notification cards (deletes the card objects and their children)
+static void clear_notification_cards(void)
+{
+    for (int i = 0; i < MAX_NOTIFICATION_CARDS; i++) {
+        if (s_notification_cards[i]) {
+            lv_obj_delete(s_notification_cards[i]);
+            s_notification_cards[i] = NULL;
+        }
+        // Labels are children of cards, so they get deleted automatically
+        s_notification_sender_labels[i] = NULL;
+        s_notification_title_labels[i] = NULL;
     }
 }
 
@@ -2295,6 +2315,7 @@ static void hide_all_screen_elements(void)
     clear_weather_icons();
     clear_particles();
     clear_calendar_cards();
+    clear_notification_cards();
     clear_pixel_objects();
 
 
@@ -2991,6 +3012,60 @@ void face_renderer_show_calendar(const calendar_event_t *events, int num_events)
             ESP_LOGI(TAG, "Calendar display: %d events", num_events);
         } else {
             ESP_LOGE(TAG, "Failed to acquire display lock for calendar");
+        }
+
+        xSemaphoreGive(s_renderer.mutex);
+    }
+}
+
+void face_renderer_show_notifications(const calendar_event_t *events, int num_events)
+{
+    if (!s_renderer.initialized || !events) return;
+    if (num_events < 1) num_events = 1;
+    if (num_events > MAX_NOTIFICATION_CARDS) num_events = MAX_NOTIFICATION_CARDS;
+
+    if (xSemaphoreTake(s_renderer.mutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+        if (bsp_display_lock(500)) {
+            // Set mode AFTER acquiring display lock to ensure hide_all_screen_elements runs
+            s_renderer.mode = DISPLAY_MODE_NOTIFICATIONS;
+            hide_all_screen_elements();
+
+            lv_obj_t *scr = lv_scr_act();
+
+            // Card dimensions - Apple Watch style (adjusted for screen bezel)
+            int margin_x = 35;  // Increased for bezel
+            int card_width = s_renderer.width - (margin_x * 2);
+            int card_height = (num_events == 1) ? 170 :
+                              (num_events == 2) ? 120 : 95;  // Slightly smaller to fit in safe area
+            int card_spacing = 10;
+            int start_y = 45;  // Start below top (increased for bezel)
+
+            for (int i = 0; i < num_events; i++) {
+                // Create card container
+                int card_y = start_y + i * (card_height + card_spacing);
+                s_notification_cards[i] = create_card(scr, margin_x, card_y, card_width, card_height);
+
+                // Sender label (orange accent at top of card - different from calendar blue)
+                s_notification_sender_labels[i] = lv_label_create(s_notification_cards[i]);
+                lv_label_set_text(s_notification_sender_labels[i], events[i].time_str);  // time_str = sender
+                lv_obj_set_style_text_color(s_notification_sender_labels[i], lv_color_hex(COLOR_ACCENT_ORANGE), 0);
+                lv_obj_set_style_text_font(s_notification_sender_labels[i], &lv_font_montserrat_20, 0);
+                lv_obj_align(s_notification_sender_labels[i], LV_ALIGN_TOP_LEFT, 0, 0);
+
+                // Subject/title label (white, bold - using larger font)
+                s_notification_title_labels[i] = lv_label_create(s_notification_cards[i]);
+                lv_label_set_text(s_notification_title_labels[i], events[i].title);
+                lv_obj_set_style_text_color(s_notification_title_labels[i], lv_color_hex(COLOR_TEXT_PRIMARY), 0);
+                lv_obj_set_style_text_font(s_notification_title_labels[i], &lv_font_montserrat_28, 0);
+                lv_obj_set_width(s_notification_title_labels[i], card_width - 2 * CARD_PADDING);
+                lv_label_set_long_mode(s_notification_title_labels[i], LV_LABEL_LONG_WRAP);
+                lv_obj_align(s_notification_title_labels[i], LV_ALIGN_TOP_LEFT, 0, 26);
+            }
+
+            bsp_display_unlock();
+            ESP_LOGI(TAG, "Notifications display: %d items", num_events);
+        } else {
+            ESP_LOGE(TAG, "Failed to acquire display lock for notifications");
         }
 
         xSemaphoreGive(s_renderer.mutex);

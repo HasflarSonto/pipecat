@@ -302,7 +302,7 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
         cmd->data.calendar.num_events = 0;
         if (events && cJSON_IsArray(events)) {
             int count = cJSON_GetArraySize(events);
-            if (count > 3) count = 3;
+            if (count > 5) count = 5;
             for (int i = 0; i < count; i++) {
                 cJSON *event = cJSON_GetArrayItem(events, i);
                 if (event) {
@@ -326,6 +326,38 @@ esp_err_t luna_protocol_parse(const char *json, luna_cmd_t *cmd)
             }
         }
         ESP_LOGD(TAG, "Parsed calendar: %d events", cmd->data.calendar.num_events);
+    }
+    else if (strcmp(cmd_str, "notifications") == 0) {
+        cmd->type = LUNA_CMD_NOTIFICATIONS;
+        cJSON *events = cJSON_GetObjectItem(root, "events");
+
+        cmd->data.notifications.num_events = 0;
+        if (events && cJSON_IsArray(events)) {
+            int count = cJSON_GetArraySize(events);
+            if (count > 5) count = 5;
+            for (int i = 0; i < count; i++) {
+                cJSON *event = cJSON_GetArrayItem(events, i);
+                if (event) {
+                    luna_calendar_event_t *e = &cmd->data.notifications.events[cmd->data.notifications.num_events];
+
+                    cJSON *time_str = cJSON_GetObjectItem(event, "time_str");
+                    cJSON *title = cJSON_GetObjectItem(event, "title");
+                    cJSON *location = cJSON_GetObjectItem(event, "location");
+
+                    if (time_str && cJSON_IsString(time_str)) {
+                        strncpy(e->time_str, time_str->valuestring, sizeof(e->time_str) - 1);
+                    }
+                    if (title && cJSON_IsString(title)) {
+                        strncpy(e->title, title->valuestring, sizeof(e->title) - 1);
+                    }
+                    if (location && cJSON_IsString(location)) {
+                        strncpy(e->location, location->valuestring, sizeof(e->location) - 1);
+                    }
+                    cmd->data.notifications.num_events++;
+                }
+            }
+        }
+        ESP_LOGD(TAG, "Parsed notifications: %d items", cmd->data.notifications.num_events);
     }
     else {
         ESP_LOGW(TAG, "Unknown command: %s", cmd_str);

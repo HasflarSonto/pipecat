@@ -177,14 +177,29 @@ static void handle_ws_command(const char *json_str)
 
         case LUNA_CMD_CALENDAR: {
             // Convert luna_calendar_event_t to calendar_event_t for face_renderer
-            calendar_event_t events[3];
-            for (int i = 0; i < cmd.data.calendar.num_events && i < 3; i++) {
+            calendar_event_t events[5];
+            int count = cmd.data.calendar.num_events > 5 ? 5 : cmd.data.calendar.num_events;
+            for (int i = 0; i < count; i++) {
                 strncpy(events[i].time_str, cmd.data.calendar.events[i].time_str, sizeof(events[i].time_str) - 1);
                 strncpy(events[i].title, cmd.data.calendar.events[i].title, sizeof(events[i].title) - 1);
                 strncpy(events[i].location, cmd.data.calendar.events[i].location, sizeof(events[i].location) - 1);
             }
-            face_renderer_show_calendar(events, cmd.data.calendar.num_events);
-            ESP_LOGI(TAG, "Show calendar: %d events", cmd.data.calendar.num_events);
+            face_renderer_show_calendar(events, count);
+            ESP_LOGI(TAG, "Show calendar: %d events", count);
+            break;
+        }
+
+        case LUNA_CMD_NOTIFICATIONS: {
+            // Convert luna_calendar_event_t to calendar_event_t for face_renderer
+            calendar_event_t events[5];
+            int count = cmd.data.notifications.num_events > 5 ? 5 : cmd.data.notifications.num_events;
+            for (int i = 0; i < count; i++) {
+                strncpy(events[i].time_str, cmd.data.notifications.events[i].time_str, sizeof(events[i].time_str) - 1);
+                strncpy(events[i].title, cmd.data.notifications.events[i].title, sizeof(events[i].title) - 1);
+                strncpy(events[i].location, cmd.data.notifications.events[i].location, sizeof(events[i].location) - 1);
+            }
+            face_renderer_show_notifications(events, count);
+            ESP_LOGI(TAG, "Show notifications: %d items", count);
             break;
         }
 
