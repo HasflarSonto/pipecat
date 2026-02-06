@@ -61,11 +61,11 @@ CONFIG_LV_FONT_MONTSERRAT_24=y
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
 
-# BSP Display - Buffer size limited by SPI DMA (~160KB max per transfer)
+# BSP Display - Buffer size limited by SPI DMA
 # Screen is 502x410, RGB565 (2 bytes/pixel)
-# Buffer = 502 * 150 * 2 = 150KB (safe for SPI, under 160KB limit)
+# Buffer = 502 * 100 * 2 = 100KB (smaller chunks to avoid SPI overflow)
 # LVGL will render the full display in multiple passes
-CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=150
+CONFIG_BSP_DISPLAY_LVGL_BUF_HEIGHT=100
 
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y

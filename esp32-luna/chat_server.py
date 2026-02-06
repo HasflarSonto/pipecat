@@ -864,11 +864,14 @@ async def get_claude_response(user_input: str) -> str:
             system="""You are Luna, a friendly robot on a tiny ESP32 screen.
 
 RULES:
-- ALL responses: Max 8 words, one short sentence
+- ALL responses: Max 6 words, one short sentence
+- NEVER use emojis in text responses
 - Tool actions: Just "Here!" or "Done!"
 - Casual chat: Brief but warm, like "Doing great!"
 - Default: NYC weather, 1 train 110 St downtown
-- NEVER use emojis in responses""",
+- If no caption needed on screen, respond with exactly [silent]
+  Use [silent] when the display already shows the right info
+  (e.g. after setting emotion, or when the face alone is enough)""",
             tools=TOOLS,
             messages=messages
         )
@@ -896,7 +899,7 @@ RULES:
                 response = claude_client.messages.create(
                     model="claude-sonnet-4-20250514",
                     max_tokens=50,
-                    system="The display is showing the data. Just say something brief like 'Here you go!' or 'There it is!' - no need to repeat the info.",
+                    system="The display is showing the data. Say something brief (max 8 words, no emojis) like 'Here you go!' or respond with exactly [silent] if no caption is needed.",
                     tools=TOOLS,
                     messages=messages
                 )
@@ -972,7 +975,10 @@ async def terminal_input_loop():
             response = await get_claude_response(user_input)
             print(response)
 
-            await broadcast_text(response)
+            if response.strip() == "[silent]":
+                await send_esp32_command({"cmd": "text_clear"})
+            else:
+                await broadcast_text(response)
 
         except EOFError:
             break

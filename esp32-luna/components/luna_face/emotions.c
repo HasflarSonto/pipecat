@@ -11,7 +11,7 @@
 static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     // EMOTION_EYES_ONLY (default - just eyes, no mouth)
     {
-        .eye_height = 75.0f,   // Same as neutral
+        .eye_height = 80.0f,   // Same as neutral
         .eye_width = 42.0f,    // Slightly wider than neutral
         .eye_openness = 1.0f,
         .mouth_curve = 0.0f,
@@ -26,7 +26,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_NEUTRAL
     {
-        .eye_height = 75.0f,
+        .eye_height = 80.0f,
         .eye_width = 40.0f,
         .eye_openness = 1.0f,
         .mouth_curve = 0.0f,
@@ -41,7 +41,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_HAPPY
     {
-        .eye_height = 70.0f,
+        .eye_height = 75.0f,
         .eye_width = 40.0f,
         .eye_openness = 0.85f,
         .mouth_curve = 0.8f,   // Bigger smile
@@ -56,7 +56,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_SAD
     {
-        .eye_height = 70.0f,
+        .eye_height = 75.0f,
         .eye_width = 38.0f,
         .eye_openness = 0.8f,
         .mouth_curve = -0.9f,  // Much more pronounced frown
@@ -71,7 +71,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_ANGRY
     {
-        .eye_height = 60.0f,
+        .eye_height = 65.0f,
         .eye_width = 45.0f,
         .eye_openness = 0.5f,
         .mouth_curve = -0.5f,  // More pronounced frown
@@ -86,7 +86,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_SURPRISED
     {
-        .eye_height = 80.0f,
+        .eye_height = 85.0f,
         .eye_width = 45.0f,
         .eye_openness = 1.15f,
         .mouth_curve = 0.0f,
@@ -101,7 +101,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_THINKING
     {
-        .eye_height = 70.0f,
+        .eye_height = 75.0f,
         .eye_width = 40.0f,
         .eye_openness = 0.9f,
         .mouth_curve = 0.3f,   // Slight smile
@@ -116,7 +116,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_CONFUSED
     {
-        .eye_height = 75.0f,
+        .eye_height = 80.0f,
         .eye_width = 40.0f,
         .eye_openness = 1.0f,
         .mouth_curve = -0.3f,  // Slight frown
@@ -131,7 +131,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_EXCITED
     {
-        .eye_height = 80.0f,
+        .eye_height = 85.0f,
         .eye_width = 48.0f,
         .eye_openness = 1.2f,
         .mouth_curve = 1.0f,   // Big smile
@@ -146,7 +146,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_CAT
     {
-        .eye_height = 75.0f,
+        .eye_height = 80.0f,
         .eye_width = 40.0f,
         .eye_openness = 1.0f,
         .mouth_curve = 0.5f,
@@ -161,7 +161,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_DIZZY (from being shaken) - wide wobbly eyes, confused mouth
     {
-        .eye_height = 80.0f,
+        .eye_height = 85.0f,
         .eye_width = 45.0f,
         .eye_openness = 1.1f,
         .mouth_curve = -0.2f,   // Slight frown/confused
@@ -176,7 +176,7 @@ static const emotion_config_t s_emotions[EMOTION_COUNT] = {
     },
     // EMOTION_DISTRESSED (lying on back or face down) - worried/uncomfortable
     {
-        .eye_height = 70.0f,
+        .eye_height = 75.0f,
         .eye_width = 50.0f,    // Wide worried eyes
         .eye_openness = 1.15f, // Eyes wide open
         .mouth_curve = -0.7f,  // Worried frown
